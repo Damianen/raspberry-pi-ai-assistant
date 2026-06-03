@@ -1,0 +1,151 @@
+"""Pixel-eye renderer for pygame. Ported from the approved HTML prototype.
+
+It READS state and draws. It contains no logic. Same parameter model as the
+prototype: openness / scale / look offset / glow / happy / warn, interpolated
+toward per-state targets each frame.
+
+NOTE: tune CELL, colours and proportions on the actual 800x480 DSI panel — the
+numbers below are a sensible starting point, not gospel.
+"""
+from __future__ import annotations
+
+import math
+import random
+
+import pygame
+
+from .state import AppState
+
+EYE = (95, 243, 232)
+WARN = (255, 90, 77)
+
+
+def _lerp(a: float, b: float, k: float) -> float:
+    return a + (b - a) * k
+
+
+class Eyes:
+    def __init__(self, width: int, height: int, cell: int = 12) -> None:
+        self.w, self.h, self.cell = width, height, cell
+        self.cols, self.rows = width // cell, height // cell
+        self.t = 0
+        self.state = AppState.IDLE
+        self._entered = 0
+        self._blink_until = 0
+        self._next_blink = 60
+        self._next_saccade = 60
+        self._sac = (0.0, 0.0)
+        self._shake = 0.0
+        # current interpolated params
+        self.p = dict(openness=1.0, scale=1.0, offx=0.0, offy=0.0,
+                      glow=1.0, happy=0.0, warn=0.0)
+
+    def set_state(self, state: AppState) -> None:
+        if state is not self.state:
+            self.state = state
+            self._entered = self.t
+
+    # ---- targets per state ----
+    def _targets(self) -> dict:
+        age = self.t - self._entered
+        s = self.state
+        if s is AppState.IDLE:
+            return dict(openness=1.0, scale=1.0, offx=self._sac[0], offy=self._sac[1],
+                        glow=1.0, happy=0.0, warn=0.0)
+        if s is AppState.LISTENING:
+            return dict(openness=1.18, scale=1 + 0.05 * math.sin(self.t * 0.18),
+                        offx=0.0, offy=-1.0, glow=1.5, happy=0.0, warn=0.0)
+        if s is AppState.THINKING:
+            return dict(openness=0.78, scale=1.0,
+                        offx=math.cos(self.t * 0.10) * 16,
+                        offy=-12 + math.sin(self.t * 0.10) * 6,
+                        glow=0.9, happy=0.0, warn=0.0)
+        if s is AppState.SPEAKING:
+            flutter = 0.85 + 0.32 * abs(math.sin(self.t * 0.42)) * (0.6 + 0.4 * random.random())
+            return dict(openness=flutter, scale=1.02, offx=0.0,
+                        offy=math.sin(self.t * 0.42) * 4, glow=1.4, happy=0.0, warn=0.0)
+        if s is AppState.CONFIRM:
+            return dict(openness=0.6, scale=1 + (0.10 * math.sin(age * 0.5) if age < 14 else 0),
+                        offx=0.0, offy=0.0, glow=2.4 if age < 8 else 1.5,
+                        happy=1.0, warn=0.0)
+        # ERROR
+        self._shake = math.sin(age * 0.9) * 6 if age < 26 else 0.0
+        return dict(openness=0.7, scale=1.0, offx=0.0, offy=0.0,
+                    glow=1.4, happy=0.0, warn=1.0)
+
+    def update(self) -> None:
+        self.t += 1
+        if self.state is AppState.IDLE:
+            if self.t > self._next_blink:
+                self._blink_until = self.t + 6
+                self._next_blink = self.t + 90 + int(random.random() * 150)
+            if self.t > self._next_saccade:
+                self._sac = ((random.random() * 2 - 1) * 22, (random.random() * 2 - 1) * 10)
+                self._next_saccade = self.t + 70 + int(random.random() * 120)
+        else:
+            self._shake = self._shake if self.state is AppState.ERROR else 0.0
+
+        tg = self._targets()
+        if self.state is AppState.IDLE and self.t < self._blink_until:
+            tg["openness"] = 0.06
+
+        k = 0.55 if self.state is AppState.SPEAKING else 0.22
+        self.p["openness"] = _lerp(self.p["openness"], tg["openness"], k)
+        self.p["scale"] = _lerp(self.p["scale"], tg["scale"], 0.22)
+        self.p["offx"] = _lerp(self.p["offx"], tg["offx"], 0.18)
+        self.p["offy"] = _lerp(self.p["offy"], tg["offy"], 0.18)
+        self.p["glow"] = _lerp(self.p["glow"], tg["glow"], 0.18)
+        self.p["happy"] = _lerp(self.p["happy"], tg["happy"], 0.25)
+        self.p["warn"] = _lerp(self.p["warn"], tg["warn"], 0.20)
+
+    # ---- shape tests (same as prototype) ----
+    @staticmethod
+    def _inside_eye(px, py, cx, cy, hw, hh) -> bool:
+        r = min(hw, hh) * 0.55
+        qx = abs(px - cx) - (hw - r)
+        qy = abs(py - cy) - (hh - r)
+        ox, oy = max(qx, 0), max(qy, 0)
+        d = math.hypot(ox, oy) + min(max(qx, qy), 0) - r
+        return d <= 0
+
+    @staticmethod
+    def _inside_happy(px, py, cx, cy, hw, hh) -> bool:
+        if abs(px - cx) > hw:
+            return False
+        nx = (px - cx) / hw
+        arch = cy + nx * nx * hh * 1.3 - hh * 0.55
+        band = max(6, hh * 0.55)
+        return arch <= py <= arch + band
+
+    def draw(self, surf: pygame.Surface) -> None:
+        surf.fill((0, 0, 0))
+        breathe = 1 + 0.012 * math.sin(self.t * 0.05)
+        s = self.p["scale"] * breathe
+        base_hw = self.w * 0.165 * s
+        base_hh = self.h * 0.30 * s * max(0.05, self.p["openness"])
+        gap = self.w * 0.21
+        cy = self.h * 0.5 + self.p["offy"]
+        cxl = self.w * 0.5 - gap + self.p["offx"] + self._shake
+        cxr = self.w * 0.5 + gap + self.p["offx"] + self._shake
+
+        col = tuple(int(_lerp(EYE[i], WARN[i], self.p["warn"])) for i in range(3))
+        happy = self.p["happy"] > 0.5
+        full_hh = self.h * 0.30 * s
+
+        cell = self.cell
+        for cx in (cxl, cxr):
+            for gx in range(self.cols):
+                for gy in range(self.rows):
+                    px, py = gx * cell + cell / 2, gy * cell + cell / 2
+                    on = (self._inside_happy(px, py, cx, cy, base_hw, full_hh)
+                          if happy else
+                          self._inside_eye(px, py, cx, cy, base_hw, base_hh))
+                    if on:
+                        pygame.draw.rect(
+                            surf, col,
+                            (gx * cell, gy * cell, cell - 1, cell - 1),
+                            border_radius=2,
+                        )
+        # Glow: cheap approximation = a second translucent pass / surface blur.
+        # On the Pi, prefer drawing onto a smaller surface and upscaling for a
+        # softer bloom rather than per-pixel blur. Tune on hardware.

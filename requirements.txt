@@ -1,0 +1,8 @@
+pygame>=2.5
+sounddevice>=0.4
+numpy>=1.26
+requests>=2.31
+# Installed/built on the Pi (may need system packages / wheels):
+pywhispercpp>=1.2     # whisper.cpp bindings (STT)
+piper-tts>=1.2        # Piper (TTS)
+# tomli is only needed on Python < 3.11 (stdlib tomllib otherwise)
