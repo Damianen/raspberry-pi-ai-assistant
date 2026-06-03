@@ -39,6 +39,13 @@ class Eyes:
         # current interpolated params
         self.p = dict(openness=1.0, scale=1.0, offx=0.0, offy=0.0,
                       glow=1.0, happy=0.0, warn=0.0)
+        # Offscreen layer for the crisp eyes. Black is colour-keyed transparent
+        # so the bloom halo behind the eyes survives the final composite.
+        self._eye_layer = pygame.Surface((width, height))
+        self._eye_layer.set_colorkey((0, 0, 0))
+        # Bloom works on a downscaled copy (shrink then grow == a cheap blur).
+        # Smaller divisor -> wider, softer halo. Tune on the panel.
+        self._bloom_size = (max(1, width // 8), max(1, height // 8))
 
     def set_state(self, state: AppState) -> None:
         if state is not self.state:
@@ -117,6 +124,24 @@ class Eyes:
         band = max(6, hh * 0.55)
         return arch <= py <= arch + band
 
+    def _eye_bbox(self, cx: float, cy: float, hw: float, hh: float,
+                  full_hh: float) -> tuple[int, int, int, int]:
+        """Grid-cell range covering one eye, so we don't scan the whole panel.
+
+        Generous on the vertical: the happy arch dips well below cy, so the box
+        must reach down to ~cy + 1.35*full_hh to include it.
+        """
+        cell = self.cell
+        left = cx - hw - cell
+        right = cx + hw + cell
+        top = cy - max(hh, full_hh * 0.6) - cell
+        bot = cy + max(hh, full_hh * 1.35) + cell
+        gx0 = max(0, int(left // cell))
+        gx1 = min(self.cols, int(right // cell) + 1)
+        gy0 = max(0, int(top // cell))
+        gy1 = min(self.rows, int(bot // cell) + 1)
+        return gx0, gx1, gy0, gy1
+
     def draw(self, surf: pygame.Surface) -> None:
         surf.fill((0, 0, 0))
         breathe = 1 + 0.012 * math.sin(self.t * 0.05)
@@ -132,20 +157,35 @@ class Eyes:
         happy = self.p["happy"] > 0.5
         full_hh = self.h * 0.30 * s
 
+        # Draw the crisp eyes onto the offscreen layer (only the cells each eye
+        # actually covers — not the whole grid).
         cell = self.cell
+        layer = self._eye_layer
+        layer.fill((0, 0, 0))
         for cx in (cxl, cxr):
-            for gx in range(self.cols):
-                for gy in range(self.rows):
+            gx0, gx1, gy0, gy1 = self._eye_bbox(cx, cy, base_hw, base_hh, full_hh)
+            for gx in range(gx0, gx1):
+                for gy in range(gy0, gy1):
                     px, py = gx * cell + cell / 2, gy * cell + cell / 2
                     on = (self._inside_happy(px, py, cx, cy, base_hw, full_hh)
                           if happy else
                           self._inside_eye(px, py, cx, cy, base_hw, base_hh))
                     if on:
                         pygame.draw.rect(
-                            surf, col,
+                            layer, col,
                             (gx * cell, gy * cell, cell - 1, cell - 1),
                             border_radius=2,
                         )
-        # Glow: cheap approximation = a second translucent pass / surface blur.
-        # On the Pi, prefer drawing onto a smaller surface and upscaling for a
-        # softer bloom rather than per-pixel blur. Tune on hardware.
+
+        # Glow: shrink the eye layer then grow it back == a cheap blur (no
+        # per-pixel work), scaled by the state's glow and blended additively so
+        # the eyes "light up". Crisp eyes go on top (black is keyed out, so the
+        # halo behind them survives).
+        g = self.p["glow"]
+        if g > 0.01:
+            small = pygame.transform.smoothscale(layer, self._bloom_size)
+            bloom = pygame.transform.smoothscale(small, (self.w, self.h))
+            m = max(0, min(255, int(80 * g)))
+            bloom.fill((m, m, m), special_flags=pygame.BLEND_RGB_MULT)
+            surf.blit(bloom, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        surf.blit(layer, (0, 0))

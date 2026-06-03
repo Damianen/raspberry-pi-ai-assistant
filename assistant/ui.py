@@ -18,8 +18,32 @@ from .state import SharedState
 SCREEN_W, SCREEN_H = 800, 480
 
 
+def dispatch_event(ev: pygame.event.Event, on_tap: Callable[[], None],
+                   on_key: Callable[[int], None] | None) -> bool:
+    """Route one pygame event to the right callback. Pure input routing — no
+    drawing, no app logic. Returns False if the app should quit.
+
+    A real finger tap is the trigger. SDL also synthesizes a MOUSEBUTTONDOWN for
+    every touch (ev.touch == True); we ignore those so one physical tap fires
+    once, while real mouse clicks (desktop dev) still work.
+    """
+    if ev.type == pygame.QUIT:
+        return False
+    if ev.type == pygame.KEYDOWN:
+        if ev.key == pygame.K_ESCAPE:
+            return False
+        if on_key is not None:
+            on_key(ev.key)
+    elif ev.type == pygame.FINGERDOWN:
+        on_tap()
+    elif ev.type == pygame.MOUSEBUTTONDOWN and not getattr(ev, "touch", False):
+        on_tap()
+    return True
+
+
 def run_ui(shared: SharedState, on_tap: Callable[[], None],
-           fullscreen: bool = True, fps: int = 60) -> None:
+           fullscreen: bool = True, fps: int = 60,
+           on_key: Callable[[int], None] | None = None) -> None:
     pygame.init()
     pygame.mouse.set_visible(False)
     flags = pygame.FULLSCREEN | pygame.SCALED if fullscreen else pygame.SCALED
@@ -31,13 +55,8 @@ def run_ui(shared: SharedState, on_tap: Callable[[], None],
     running = True
     while running:
         for ev in pygame.event.get():
-            if ev.type == pygame.QUIT:
+            if not dispatch_event(ev, on_tap, on_key):
                 running = False
-            elif ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
-                running = False
-            # touch (FINGERDOWN) or mouse click both = tap-to-listen
-            elif ev.type in (pygame.FINGERDOWN, pygame.MOUSEBUTTONDOWN):
-                on_tap()
 
         eyes.set_state(shared.state)
         eyes.update()
@@ -48,27 +67,46 @@ def run_ui(shared: SharedState, on_tap: Callable[[], None],
     pygame.quit()
 
 
-# Allows `SDL_VIDEODRIVER=dummy python -m assistant.ui` for a headless smoke test.
+# `python -m assistant.ui` — show the eyes on the panel and cycle states by
+# tapping (or number keys 1-6 / SPACE). For a headless CI smoke test instead:
+#   SDL_VIDEODRIVER=dummy python -m assistant.ui   (auto-cycles once, then exits)
+# Pass --windowed to run in a window on a dev desktop instead of fullscreen.
 if __name__ == "__main__":
-    import time
+    import sys
     from .state import AppState
 
-    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    SEQ = [AppState.IDLE, AppState.LISTENING, AppState.THINKING,
+           AppState.SPEAKING, AppState.CONFIRM, AppState.ERROR]
+    headless = os.environ.get("SDL_VIDEODRIVER") == "dummy"
     shared = SharedState()
 
-    def fake_tap() -> None:
-        shared.set(AppState.LISTENING)
+    if headless:
+        # CI: cycle through every state once so a crash in any of them shows up,
+        # then exit. No window, no input.
+        import threading
+        import time
 
-    # cycle through states so you can eyeball transitions headlessly
-    import threading
+        def cycler() -> None:
+            for st in SEQ:
+                shared.set(st)
+                time.sleep(0.4)
+            os._exit(0)
 
-    def cycler() -> None:
-        seq = [AppState.IDLE, AppState.LISTENING, AppState.THINKING,
-               AppState.SPEAKING, AppState.CONFIRM, AppState.ERROR]
-        for st in seq:
-            shared.set(st)
-            time.sleep(0.5)
-        os._exit(0)
+        threading.Thread(target=cycler, daemon=True).start()
+        run_ui(shared, lambda: None, fullscreen=False)
+    else:
+        # On the panel: tap (or SPACE) advances to the next state; number keys
+        # 1-6 jump straight to one. ESC quits. This stands in for pipeline.on_tap
+        # so we can eyeball every state on the real display before wiring audio.
+        def advance() -> None:
+            cur = shared.state
+            shared.set(SEQ[(SEQ.index(cur) + 1) % len(SEQ)])
 
-    threading.Thread(target=cycler, daemon=True).start()
-    run_ui(shared, fake_tap, fullscreen=False)
+        def on_key(key: int) -> None:
+            if key == pygame.K_SPACE:
+                advance()
+            elif pygame.K_1 <= key <= pygame.K_6:
+                shared.set(SEQ[key - pygame.K_1])
+
+        fullscreen = "--windowed" not in sys.argv
+        run_ui(shared, advance, fullscreen=fullscreen, on_key=on_key)
