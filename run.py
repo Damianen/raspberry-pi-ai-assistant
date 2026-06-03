@@ -35,7 +35,11 @@ def main() -> None:
     store = Store(cfg["storage"]["db_path"])
 
     brain_cfg = {**cfg["brain"], "max_record_seconds": cfg["audio"]["max_record_seconds"]}
-    pipeline = Pipeline(shared, store, brain_cfg)
+    pipeline = Pipeline(
+        shared, store, brain_cfg,
+        input_device=cfg["audio"]["input_device"] or None,
+        stt_model=cfg["stt"]["model"],
+    )
 
     def on_fire(ev: Event) -> None:
         shared.set(AppState.SPEAKING)

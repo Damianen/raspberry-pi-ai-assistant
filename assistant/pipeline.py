@@ -18,10 +18,14 @@ from .store import Store
 
 
 class Pipeline:
-    def __init__(self, shared: SharedState, store: Store, brain_cfg: dict) -> None:
+    def __init__(self, shared: SharedState, store: Store, brain_cfg: dict, *,
+                 input_device: int | str | None = None,
+                 stt_model: str = "base.en") -> None:
         self.shared = shared
         self.store = store
         self.brain_cfg = brain_cfg
+        self.input_device = input_device   # injected from config by run.py
+        self.stt_model = stt_model
         self._busy = threading.Lock()
 
     def on_tap(self) -> None:
@@ -35,17 +39,22 @@ class Pipeline:
             try:
                 self.shared.set(AppState.LISTENING)
                 audio = audio_io.record_until_silence(
-                    self.brain_cfg.get("max_record_seconds", 8))
+                    self.brain_cfg.get("max_record_seconds", 8),
+                    device=self.input_device)
 
                 self.shared.set(AppState.THINKING)
-                text = stt.transcribe(audio).strip()
-                if not text:
-                    return self._error("I didn't catch that.")
+                text = stt.transcribe(audio, model=self.stt_model).strip()
 
+                # --- SLICE 2 ONLY: prove capture + STT. parse() is side-effect-
+                # free, so printing the intent type is safe. Do NOT call the
+                # action handler, store, tts, or brain yet (that's slice 3+).
                 intent = parse(text, datetime.now())
-                self._handle(intent)
-            except Exception:
-                self._error("Something went wrong.")
+                print(f"[slice2] transcript: {text!r}")
+                print(f"[slice2] intent:     {intent.type.name}")
+            except Exception as exc:
+                # No tts in this slice — surface failures on the console + ERROR eyes.
+                self.shared.set(AppState.ERROR)
+                print(f"[slice2] pipeline error: {exc!r}")
             finally:
                 self.shared.set(AppState.IDLE)
 
