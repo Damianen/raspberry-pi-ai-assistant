@@ -44,6 +44,13 @@ def dispatch_event(ev: pygame.event.Event, on_tap: Callable[[], None],
 def run_ui(shared: SharedState, on_tap: Callable[[], None],
            fullscreen: bool = True, fps: int = 60,
            on_key: Callable[[int], None] | None = None) -> None:
+    # The app does ALL audio via sounddevice (record + beep) and Piper (TTS) —
+    # pygame needs no audio. Force SDL's dummy audio driver so SDL doesn't open
+    # and HOLD the output device. On the Pi the case speaker is single-client
+    # HDMI0 audio (no dmix); if SDL grabs it at init, sounddevice can't open it
+    # when an alarm fires (PaError "querying device" / default resolves to -1).
+    # Must be set before pygame.init().
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
     pygame.init()
     pygame.mouse.set_visible(False)
     flags = pygame.FULLSCREEN | pygame.SCALED if fullscreen else pygame.SCALED
