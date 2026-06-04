@@ -21,6 +21,7 @@ module (and the offline command path + tests) load fine without an audio stack.
 """
 from __future__ import annotations
 
+import threading
 from collections import deque
 
 import numpy as np
@@ -162,19 +163,21 @@ def _resolve_device(device: int | str | None) -> int | str | None:
     return device
 
 
-def beep(duration: float = 1.5, device: int | str | None = None,
-         freq: float = BEEP_FREQ) -> None:
-    """Play a short sine chime on the output device (blocking).
+# --- Output path. beep() and play() (TTS) share ONE device path and ONE lock so
+# a chime, an alarm announcement, and a spoken answer can never open the single
+# PortAudio output stream at the same time and garble each other. The lock means
+# an alarm that fires mid-answer WAITS for the answer to finish rather than
+# talking over it — the right call for a one-speaker desk device. ---
+_PLAY_LOCK = threading.Lock()
 
-    `device` takes the same forms as record_until_silence (PortAudio index, name
-    substring, or ''/None for the default). Called by the scheduler's on_fire so
-    a due alarm is audible even before TTS exists. Blocking is intentional: it
-    runs on the scheduler thread, which has nothing else to do meanwhile.
+
+def _resolve_output(device: int | str | None):
+    """Resolve the output device and read ITS native (rate, channels).
 
     Channel count and sample rate come FROM THE DEVICE, not assumed: many outputs
-    (HDMI, USB DACs) reject a mono stream (PaErrorCode -9998) or a fixed 44.1k
-    rate (-9997). We build the tone at the device's advertised rate and tile it
-    to its channels (prefer stereo), so it plays on whatever is actually openable.
+    (HDMI, USB DACs) reject a mono stream (PaErrorCode -9998) or a fixed rate
+    (-9997). Callers build/resample audio to these values so it plays on whatever
+    is actually openable.
     """
     import sounddevice as sd  # lazy: needs native PortAudio (absent on dev boxes)
 
@@ -182,6 +185,55 @@ def beep(duration: float = 1.5, device: int | str | None = None,
     info = sd.query_devices(device, "output")
     rate = int(info["default_samplerate"]) or BEEP_RATE
     channels = max(1, min(2, int(info["max_output_channels"])))   # 1 or 2; prefer stereo
+    return device, rate, channels
+
+
+def _play_blocking(mono: np.ndarray, rate: int, channels: int,
+                   device: int | str | None) -> None:
+    """Tile a mono float32 signal to `channels` and play it (blocking, serialized)."""
+    import sounddevice as sd  # lazy: needs native PortAudio (absent on dev boxes)
+
+    wave = np.tile(mono[:, None], (1, channels))   # mono column -> (n, channels)
+    with _PLAY_LOCK:
+        sd.play(wave, samplerate=rate, device=device)
+        sd.wait()
+
+
+def _resample_linear(x: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Resample a mono float32 signal by linear interpolation.
+
+    Used to match Piper's voice rate (e.g. 22050) to the output device's native
+    rate (e.g. 48000). We only ever UPSAMPLE here (device rate >= voice rate),
+    where linear interp adds NO aliasing and only a benign top-octave roll-off —
+    inaudible on 3W speakers, and far cheaper than a polyphase sinc on the Pi.
+    If a device ever advertised a LOWER rate than the voice, this would alias and
+    we'd need an anti-alias low-pass first (see the 48k->16k capture path); guard
+    for that day, don't build it now.
+    """
+    if x.size == 0 or src_rate == dst_rate:
+        return x
+    n_out = int(round(x.size * dst_rate / src_rate))
+    if n_out <= 0:
+        return np.zeros(0, dtype=np.float32)
+    # Output sample i maps to source position i * src_rate / dst_rate (in samples).
+    pos = np.arange(n_out, dtype=np.float64) * (src_rate / dst_rate)
+    grid = np.arange(x.size, dtype=np.float64)
+    return np.interp(pos, grid, x).astype(np.float32)
+
+
+def beep(duration: float = 1.5, device: int | str | None = None,
+         freq: float = BEEP_FREQ) -> None:
+    """Play a short sine chime on the output device (blocking).
+
+    `device` takes the same forms as record_until_silence (PortAudio index, name
+    substring, or ''/None for the default). Called by the scheduler's on_fire so
+    a due alarm is audible before its spoken announcement. Blocking is intentional:
+    it runs on the scheduler thread, which has nothing else to do meanwhile.
+
+    The tone is built at the device's advertised rate (so no resample is needed)
+    and routed through the shared playback path.
+    """
+    device, rate, channels = _resolve_output(device)
 
     n = max(1, int(rate * duration))
     t = np.arange(n, dtype=np.float32) / rate
@@ -193,10 +245,20 @@ def beep(duration: float = 1.5, device: int | str | None = None,
     tone[:fade] *= ramp
     tone[-fade:] *= ramp[::-1]
 
-    wave = np.tile(tone[:, None], (1, channels))   # mono column -> (n, channels)
-    sd.play(wave, samplerate=rate, device=device)
-    sd.wait()
+    _play_blocking(tone, rate, channels, device)
 
 
-def play(audio: bytes) -> None:
-    raise NotImplementedError("Implement with sounddevice/aplay on the Pi (TTS slice).")
+def play(samples: np.ndarray, src_rate: int,
+         device: int | str | None = None) -> None:
+    """Play a mono float32 signal in [-1, 1] through the output device (blocking).
+
+    Resamples from `src_rate` to the device's native rate and tiles to its channel
+    count — the SAME proven path as beep(). This is what tts.speak() hands its
+    synthesized PCM to; tts never touches sounddevice itself.
+    """
+    if samples is None or samples.size == 0:
+        return
+    device, rate, channels = _resolve_output(device)
+    mono = _resample_linear(samples.astype(np.float32, copy=False), src_rate, rate)
+    mono = np.clip(mono, -1.0, 1.0)
+    _play_blocking(mono, rate, channels, device)

@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime
+from pathlib import Path
 
 from . import audio_io, brain, stt, tts
 from .intent import Intent, IntentType, parse
 from .state import AppState, SharedState
 from .store import Store
+
+# One line per interaction: timestamp | transcript | intent type | fire_at.
+# This is the dataset we mine to fix the parser, so it's written for EVERY run,
+# right after parsing — before acting, so a downstream failure can't drop the row.
+LOG_PATH = Path("logs/interactions.log")
 
 
 class Pipeline:
@@ -45,6 +51,7 @@ class Pipeline:
                 self.shared.set(AppState.THINKING)
                 text = stt.transcribe(audio, model=self.stt_model).strip()
                 intent = parse(text, datetime.now())
+                self._log_interaction(text, intent)
                 print(f"[pipeline] transcript: {text!r}")
                 print(f"[pipeline] intent:     {intent.type.name}")
 
@@ -68,6 +75,22 @@ class Pipeline:
             self._speak(f"It's {datetime.now():%A, %B %d}.")
         else:  # QUERY -> LLM
             self._speak(self._ask_llm(intent.raw))
+
+    @staticmethod
+    def _log_interaction(transcript: str, intent: Intent) -> None:
+        """Append one pipe-delimited row to the interaction log. Best-effort: a
+        logging failure must never break the interaction, so it's swallowed."""
+        fire_at = intent.fire_at.isoformat(timespec="seconds") if intent.fire_at else ""
+        # Keep the transcript on one field: collapse anything that would break the
+        # pipe-delimited, one-row-per-line format.
+        clean = transcript.replace("|", "/").replace("\n", " ").replace("\r", " ")
+        row = f"{datetime.now().isoformat(timespec='seconds')} | {clean} | {intent.type.name} | {fire_at}\n"
+        try:
+            LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with LOG_PATH.open("a", encoding="utf-8") as f:
+                f.write(row)
+        except Exception as exc:
+            print(f"[pipeline] could not write interaction log: {exc!r}")
 
     # ---- effects ----
     def _confirm(self, phrase: str) -> None:

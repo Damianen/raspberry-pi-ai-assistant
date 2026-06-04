@@ -42,6 +42,7 @@ def main() -> None:
     )
 
     output_device = cfg["audio"]["output_device"] or None
+    tts.configure(cfg["tts"]["voice"], output_device=output_device)
 
     def on_fire(ev: Event) -> None:
         shared.set(AppState.SPEAKING)
