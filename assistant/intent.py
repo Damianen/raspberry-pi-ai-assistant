@@ -33,6 +33,10 @@ class Intent:
     label: str = ""
     # original transcript, always preserved
     raw: str = ""
+    # True for a long-form request ("tell me a story/poem"): the caller hands this
+    # to brain.ask(longform=...) for a different system prompt + bigger token
+    # budget. Only ever set on QUERY; every command leaves it False.
+    longform: bool = False
 
 
 _NUM_WORDS = {
@@ -51,6 +55,13 @@ _HOUR_WORDS = {
     "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
     "noon": 12, "midnight": 0,
 }
+
+
+# Long-form requests ("tell me a story", "tell a poem"). Matched BEFORE the
+# command rules so "tell me a story about waking up at seven" is a story, not a
+# 7 o'clock alarm. The explicit "a/an story|poem|tale" keeps a normal "tell me
+# about the moon" out of long-form mode — that still routes to a short answer.
+_LONGFORM_RE = re.compile(r"\btell\s+(?:me\s+)?an?\s+(?:story|poem|tale)\b")
 
 
 def _word_to_int(tok: str) -> int | None:
@@ -155,6 +166,11 @@ def parse(text: str, now: datetime | None = None) -> Intent:
 
     if not t:
         return Intent(IntentType.QUERY, raw=raw, label=raw)
+
+    # --- long-form story/poem -> LLM (with the long-form prompt). MUST stay above
+    # the command rules so a story request is never swallowed as an alarm/timer. ---
+    if _LONGFORM_RE.search(t):
+        return Intent(IntentType.QUERY, raw=raw, label=raw, longform=True)
 
     # --- time / date questions ---
     if re.search(r"\bwhat('?s| is)?\s+the\s+time\b|\bwhat time is it\b", t):

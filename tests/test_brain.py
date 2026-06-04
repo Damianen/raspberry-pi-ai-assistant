@@ -65,6 +65,27 @@ def test_offline_tries_two_models_then_raises(monkeypatch):
     assert calls == ["cheap", "backup"]
 
 
+def test_longform_uses_story_prompt_budget_and_timeout(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    seen = {}
+
+    def fake_post(url, *, headers, timeout, json):
+        seen["timeout"] = timeout
+        seen["max_tokens"] = json["max_tokens"]
+        seen["system"] = json["messages"][0]["content"]
+        return _FakeResponse("Once upon a time...")
+
+    monkeypatch.setattr(brain.requests, "post", fake_post)
+    out = brain.ask("tell me a story about trees", model="cheap", fallback_model="f",
+                    timeout=7.0, max_tokens=120, longform=True)
+    assert out == "Once upon a time..."
+    # Long-form overrides BOTH the prompt and the token budget...
+    assert seen["system"] == brain.LONGFORM_SYSTEM
+    assert seen["max_tokens"] == brain.LONGFORM_MAX_TOKENS
+    # ...and lifts the READ timeout floor (connect stays short -> offline fails fast).
+    assert seen["timeout"] == (brain._CONNECT_TIMEOUT, brain._LONGFORM_READ_TIMEOUT)
+
+
 def test_falls_back_to_second_model(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     calls: list[str] = []

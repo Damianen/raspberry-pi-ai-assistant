@@ -64,7 +64,46 @@ def test_query_fallthrough():
     i = parse("why is the sky blue", NOW)
     assert i.type is IntentType.QUERY
     assert i.raw == "why is the sky blue"
+    assert i.longform is False
 
 
 def test_empty_is_query():
     assert parse("   ", NOW).type is IntentType.QUERY
+
+
+# --- long-form (slice 6) ---
+
+def test_longform_story_beats_alarm():
+    # The whole point of ordering long-form first: this must be a story, NOT a
+    # 7 o'clock alarm.
+    i = parse("tell me a story about waking up at seven", NOW)
+    assert i.type is IntentType.QUERY
+    assert i.longform is True
+    assert i.fire_at is None
+
+
+def test_longform_plain_story():
+    i = parse("tell me a story about trees", NOW)
+    assert i.type is IntentType.QUERY
+    assert i.longform is True
+
+
+def test_longform_poem_no_me():
+    i = parse("tell a poem", NOW)
+    assert i.type is IntentType.QUERY
+    assert i.longform is True
+
+
+def test_normal_command_still_parses_and_not_longform():
+    # "tell" only triggers long-form for a/an story|poem|tale — commands are intact.
+    i = parse("set a timer for one minute", NOW)
+    assert i.type is IntentType.SET_TIMER
+    assert i.longform is False
+    assert i.fire_at == NOW.replace(minute=1)
+
+
+def test_tell_me_about_is_a_normal_query():
+    # A plain "tell me about X" is NOT long-form: short spoken answer, 120-token cap.
+    i = parse("tell me about the moon", NOW)
+    assert i.type is IntentType.QUERY
+    assert i.longform is False

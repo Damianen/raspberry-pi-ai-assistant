@@ -39,15 +39,26 @@ class Pipeline:
         self.input_device = input_device   # injected from config by run.py
         self.stt_model = stt_model
         self._busy = threading.Lock()
+        # Set by a tap while SPEAKING; the playback loop polls it and bails. Cleared
+        # at the start of every interaction so a prior interrupt can't leak forward.
+        self._interrupt = threading.Event()
 
     def on_tap(self) -> None:
-        """Non-blocking entry point for the UI. Ignores taps while busy."""
+        """Non-blocking entry point for the UI (runs on the pygame main thread, so
+        it must never block). A tap while idle starts an interaction. A tap while
+        busy is ignored — EXCEPT during SPEAKING, where it means 'stop talking':
+        we set the interrupt and let the in-flight interaction unwind to IDLE.
+        LISTENING/THINKING stay uninterruptible so a half-captured command isn't
+        dropped."""
         if self._busy.locked():
+            if self.shared.state is AppState.SPEAKING:
+                self._interrupt.set()
             return
         threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self) -> None:
         with self._busy:
+            self._interrupt.clear()
             try:
                 self.shared.set(AppState.LISTENING)
                 audio = audio_io.record_until_silence(
@@ -88,7 +99,7 @@ class Pipeline:
         elif intent.type is IntentType.GET_DATE:
             self._speak(f"It's {datetime.now():%A, %B %d}.")
         else:  # QUERY -> LLM
-            answer = self._ask_llm(intent.raw)
+            answer = self._ask_llm(intent.raw, longform=intent.longform)
             self._speak(answer)
             return answer
         return None
@@ -117,8 +128,11 @@ class Pipeline:
         tts.speak(phrase)
 
     def _speak(self, phrase: str) -> None:
+        # SPEAKING is the one interruptible state: hand tts the interrupt event so a
+        # tap can cut the answer/story mid-stream (see on_tap). Confirmations go via
+        # _confirm with no event, so they always finish.
         self.shared.set(AppState.SPEAKING)
-        tts.speak(phrase)
+        tts.speak(phrase, stop_event=self._interrupt)
 
     def _error(self, phrase: str) -> None:
         self.shared.set(AppState.ERROR)
@@ -127,7 +141,7 @@ class Pipeline:
         except Exception:
             pass
 
-    def _ask_llm(self, text: str) -> str:
+    def _ask_llm(self, text: str, *, longform: bool = False) -> str:
         try:
             return brain.ask(
                 text,
@@ -135,6 +149,7 @@ class Pipeline:
                 fallback_model=self.brain_cfg["fallback_model"],
                 timeout=self.brain_cfg.get("timeout_seconds", 7),
                 max_tokens=self.brain_cfg.get("max_tokens", 300),
+                longform=longform,
             )
         except Exception:
             return "I can't reach the internet right now."

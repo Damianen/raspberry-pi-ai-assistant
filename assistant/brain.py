@@ -38,15 +38,37 @@ SYSTEM = (
     "No markdown, no lists — this will be read aloud."
 )
 
+# Long-form mode ("tell me a story/poem"), selected by ask(longform=True). Kept
+# entirely separate from the SYSTEM/120-token path so the normal 1-2 sentence
+# answer is unchanged.
+LONGFORM_SYSTEM = (
+    "You are a small desk assistant telling a story out loud. Tell one engaging, "
+    "self-contained short story — about a minute when read aloud. Use plain spoken "
+    "prose: no markdown, no lists, no headings, no title. Begin the story directly."
+)
+LONGFORM_MAX_TOKENS = 400
+# 400 tokens take longer to generate than 1-2 sentences, so the READ timeout gets
+# a higher floor for long-form (the CONNECT timeout is untouched — offline still
+# fails fast). Without this, a legitimately slow story trips the 7s read budget
+# and degrades to the fallback line for no good reason.
+_LONGFORM_READ_TIMEOUT = 15.0
+
 
 def ask(text: str, *, model: str, fallback_model: str,
-        timeout: float = 7.0, max_tokens: int = 120) -> str:
+        timeout: float = 7.0, max_tokens: int = 120, longform: bool = False) -> str:
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY not set")
 
+    if longform:
+        system = LONGFORM_SYSTEM
+        max_tokens = LONGFORM_MAX_TOKENS
+        timeout = max(timeout, _LONGFORM_READ_TIMEOUT)
+    else:
+        system = SYSTEM
+
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    messages = [{"role": "system", "content": SYSTEM},
+    messages = [{"role": "system", "content": system},
                 {"role": "user", "content": text}]
 
     attempts = (model, fallback_model)

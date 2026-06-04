@@ -71,9 +71,21 @@ def _get_voice():
     return _voice
 
 
-def speak(text: str) -> None:
+def speak(text: str, *, stop_event: "threading.Event | None" = None) -> None:
     """Synthesize `text` with Piper and play it on the output device. Blocks until
-    playback finishes. No-op on empty text."""
+    playback finishes. No-op on empty text.
+
+    `stop_event`: forwarded to audio_io.play. When set mid-playback, playback bails
+    out (tap-to-interrupt during SPEAKING). The pipeline passes its interrupt event
+    only for spoken answers/stories; confirmations and alarm announcements pass
+    None so they always finish.
+
+    NOTE: synthesis happens up front — the whole utterance is built before any
+    audio plays. A tap DURING synthesis (the silent gap before speech) sets the
+    event, so play() aborts on its first chunk and nothing is spoken. That's the
+    intended "stop" behaviour, but it's also why a long story has a noticeable gap
+    before it starts: sentence-streaming TTS (deferred) is what removes that gap.
+    """
     text = text.strip()
     if not text:
         return
@@ -87,4 +99,5 @@ def speak(text: str) -> None:
     samples = np.concatenate(chunks).astype(np.float32, copy=False)
 
     # Rate from the voice config (the .onnx.json) — NOT a hardcoded 22050.
-    audio_io.play(samples, voice.config.sample_rate, device=_output_device)
+    audio_io.play(samples, voice.config.sample_rate, device=_output_device,
+                  stop_event=stop_event)

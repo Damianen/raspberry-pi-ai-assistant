@@ -199,6 +199,47 @@ def _play_blocking(mono: np.ndarray, rate: int, channels: int,
         sd.wait()
 
 
+# Interruptible playback (tap-to-interrupt during SPEAKING). We check the stop
+# event between fixed-size chunks; ~100 ms bounds the tap-to-silence latency to a
+# single chunk while keeping the per-write Python overhead negligible.
+_INTERRUPT_CHUNK_MS = 100
+
+
+def _play_interruptible(mono: np.ndarray, rate: int, channels: int,
+                        device: int | str | None,
+                        stop_event: "threading.Event") -> None:
+    """Play a mono float32 signal in chunks, bailing the instant `stop_event` is set.
+
+    Backs the interruptible SPEAKING path: a tap sets the event, and at most the
+    current chunk still plays before we ABORT — abort discards everything PortAudio
+    has buffered, so the speaker goes silent at once instead of draining a second
+    of queued story. On a normal finish we stop() (which drains the queued tail)
+    before closing, so the last words aren't clipped.
+
+    Shares _PLAY_LOCK with beep()/_play_blocking, so two streams can never open the
+    single output device at the same time. We drive an OutputStream directly here
+    (rather than sd.play/sd.wait) precisely so the write loop can poll the event;
+    the non-interruptible paths keep the proven sd.play/sd.wait path unchanged.
+    """
+    import sounddevice as sd  # lazy: needs native PortAudio (absent on dev boxes)
+
+    wave = np.tile(mono[:, None], (1, channels))   # mono column -> (n, channels)
+    chunk = max(1, int(rate * _INTERRUPT_CHUNK_MS / 1000))
+    with _PLAY_LOCK:
+        stream = sd.OutputStream(samplerate=rate, channels=channels,
+                                 dtype="float32", device=device)
+        stream.start()
+        try:
+            for start in range(0, len(wave), chunk):
+                if stop_event.is_set():
+                    stream.abort()     # drop buffered frames -> instant silence
+                    return
+                stream.write(wave[start:start + chunk])
+            stream.stop()              # drain the queued tail before closing
+        finally:
+            stream.close()
+
+
 def _resample_linear(x: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     """Resample a mono float32 signal by linear interpolation.
 
@@ -249,16 +290,24 @@ def beep(duration: float = 1.5, device: int | str | None = None,
 
 
 def play(samples: np.ndarray, src_rate: int,
-         device: int | str | None = None) -> None:
+         device: int | str | None = None, *,
+         stop_event: "threading.Event | None" = None) -> None:
     """Play a mono float32 signal in [-1, 1] through the output device (blocking).
 
     Resamples from `src_rate` to the device's native rate and tiles to its channel
     count — the SAME proven path as beep(). This is what tts.speak() hands its
     synthesized PCM to; tts never touches sounddevice itself.
+
+    `stop_event`: when given (the SPEAKING / tap-to-interrupt path), play in chunks
+    and bail the moment it's set. When None (beep, confirmations, alarm
+    announcements), use the unchanged blocking path — those are not interruptible.
     """
     if samples is None or samples.size == 0:
         return
     device, rate, channels = _resolve_output(device)
     mono = _resample_linear(samples.astype(np.float32, copy=False), src_rate, rate)
     mono = np.clip(mono, -1.0, 1.0)
-    _play_blocking(mono, rate, channels, device)
+    if stop_event is None:
+        _play_blocking(mono, rate, channels, device)
+    else:
+        _play_interruptible(mono, rate, channels, device, stop_event)
