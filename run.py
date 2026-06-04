@@ -7,6 +7,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # device must still boot for offline alarms
+    def load_dotenv(*_a, **_k) -> bool:  # type: ignore[misc]
+        return False
+
 from assistant.pipeline import Pipeline
 from assistant.scheduler import Scheduler
 from assistant.state import AppState, SharedState
@@ -30,6 +36,10 @@ def load_config() -> dict:
 
 
 def main() -> None:
+    # Pull OPENROUTER_API_KEY (and anything else) from .env before brain.ask
+    # reads it. load_dotenv won't override a key already set in the real env,
+    # and the key is never logged. Commands run fully offline regardless.
+    load_dotenv()
     cfg = load_config()
     shared = SharedState()
     store = Store(cfg["storage"]["db_path"])

@@ -23,6 +23,12 @@ from .store import Store
 LOG_PATH = Path("logs/interactions.log")
 
 
+def _oneline(s: str) -> str:
+    """Collapse anything that would break the pipe-delimited, one-row-per-line
+    log format (field separators and newlines)."""
+    return s.replace("|", "/").replace("\n", " ").replace("\r", " ")
+
+
 class Pipeline:
     def __init__(self, shared: SharedState, store: Store, brain_cfg: dict, *,
                  input_device: int | str | None = None,
@@ -51,19 +57,27 @@ class Pipeline:
                 self.shared.set(AppState.THINKING)
                 text = stt.transcribe(audio, model=self.stt_model).strip()
                 intent = parse(text, datetime.now())
-                self._log_interaction(text, intent)
                 print(f"[pipeline] transcript: {text!r}")
                 print(f"[pipeline] intent:     {intent.type.name}")
 
-                # Slice 3: act on it — store the event / answer / read the clock.
-                self._handle(intent)
+                # Commands are logged BEFORE acting so a store/TTS failure can't
+                # drop the parser-mining row. A QUERY's answer isn't known until
+                # the LLM returns, so its row is logged AFTER _handle; _ask_llm
+                # never raises, so only a hard kill mid-request could lose it.
+                if intent.type is not IntentType.QUERY:
+                    self._log_interaction(text, intent)
+                answer = self._handle(intent)
+                if intent.type is IntentType.QUERY:
+                    self._log_interaction(text, intent, answer or "")
             except Exception as exc:
                 print(f"[pipeline] error: {exc!r}")
                 self._error("Sorry, something went wrong.")
             finally:
                 self.shared.set(AppState.IDLE)
 
-    def _handle(self, intent: Intent) -> None:
+    def _handle(self, intent: Intent) -> str | None:
+        """Act on the intent. Returns the spoken LLM answer for QUERY (so the
+        caller can log it), None for every local command."""
         if intent.type in (IntentType.SET_ALARM, IntentType.SET_TIMER,
                             IntentType.SET_REMINDER):
             kind = intent.type.name.replace("SET_", "").lower()
@@ -74,17 +88,22 @@ class Pipeline:
         elif intent.type is IntentType.GET_DATE:
             self._speak(f"It's {datetime.now():%A, %B %d}.")
         else:  # QUERY -> LLM
-            self._speak(self._ask_llm(intent.raw))
+            answer = self._ask_llm(intent.raw)
+            self._speak(answer)
+            return answer
+        return None
 
     @staticmethod
-    def _log_interaction(transcript: str, intent: Intent) -> None:
+    def _log_interaction(transcript: str, intent: Intent, answer: str = "") -> None:
         """Append one pipe-delimited row to the interaction log. Best-effort: a
-        logging failure must never break the interaction, so it's swallowed."""
+        logging failure must never break the interaction, so it's swallowed.
+
+        Columns: timestamp | transcript | intent | fire_at | answer. `answer` is
+        the spoken LLM reply for QUERY intents (empty otherwise); only its first
+        80 chars are kept so the log stays greppable and one-row-per-line."""
         fire_at = intent.fire_at.isoformat(timespec="seconds") if intent.fire_at else ""
-        # Keep the transcript on one field: collapse anything that would break the
-        # pipe-delimited, one-row-per-line format.
-        clean = transcript.replace("|", "/").replace("\n", " ").replace("\r", " ")
-        row = f"{datetime.now().isoformat(timespec='seconds')} | {clean} | {intent.type.name} | {fire_at}\n"
+        row = (f"{datetime.now().isoformat(timespec='seconds')} | {_oneline(transcript)} | "
+               f"{intent.type.name} | {fire_at} | {_oneline(answer)[:80]}\n")
         try:
             LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
             with LOG_PATH.open("a", encoding="utf-8") as f:
