@@ -65,7 +65,7 @@ _DECIM_FIR = _design_lowpass(_DECIM_TAPS, _DECIM_CUTOFF_HZ, CAPTURE_RATE)
 # --- Beep (slice 3): a short sine chime so a firing alarm is audible before the
 # spoken announcement exists. Also the first thing to actually exercise the
 # OUTPUT path in code. 44.1 kHz is universally supported by output devices. ---
-BEEP_RATE = 44_100
+BEEP_RATE = 44_100     # fallback rate only; we use the device's advertised rate
 BEEP_FREQ = 880.0      # A5 — clearly audible, not piercing
 BEEP_AMPLITUDE = 0.3   # well below clipping; speakers in a quiet room
 
@@ -170,21 +170,31 @@ def beep(duration: float = 1.5, device: int | str | None = None,
     substring, or ''/None for the default). Called by the scheduler's on_fire so
     a due alarm is audible even before TTS exists. Blocking is intentional: it
     runs on the scheduler thread, which has nothing else to do meanwhile.
+
+    Channel count and sample rate come FROM THE DEVICE, not assumed: many outputs
+    (HDMI, USB DACs) reject a mono stream (PaErrorCode -9998) or a fixed 44.1k
+    rate (-9997). We build the tone at the device's advertised rate and tile it
+    to its channels (prefer stereo), so it plays on whatever is actually openable.
     """
     import sounddevice as sd  # lazy: needs native PortAudio (absent on dev boxes)
 
     device = _resolve_device(device)
-    n = max(1, int(BEEP_RATE * duration))
-    t = np.arange(n, dtype=np.float32) / BEEP_RATE
-    wave = (BEEP_AMPLITUDE * np.sin(2.0 * np.pi * freq * t)).astype(np.float32)
+    info = sd.query_devices(device, "output")
+    rate = int(info["default_samplerate"]) or BEEP_RATE
+    channels = max(1, min(2, int(info["max_output_channels"])))   # 1 or 2; prefer stereo
+
+    n = max(1, int(rate * duration))
+    t = np.arange(n, dtype=np.float32) / rate
+    tone = (BEEP_AMPLITUDE * np.sin(2.0 * np.pi * freq * t)).astype(np.float32)
 
     # 10 ms raised-cosine fade in/out so the tone doesn't click on start/stop.
-    fade = min(n // 2, max(1, int(BEEP_RATE * 0.01)))
+    fade = min(n // 2, max(1, int(rate * 0.01)))
     ramp = (0.5 * (1 - np.cos(np.linspace(0.0, np.pi, fade)))).astype(np.float32)
-    wave[:fade] *= ramp
-    wave[-fade:] *= ramp[::-1]
+    tone[:fade] *= ramp
+    tone[-fade:] *= ramp[::-1]
 
-    sd.play(wave, samplerate=BEEP_RATE, device=device)
+    wave = np.tile(tone[:, None], (1, channels))   # mono column -> (n, channels)
+    sd.play(wave, samplerate=rate, device=device)
     sd.wait()
 
 
