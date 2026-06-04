@@ -12,7 +12,7 @@ from assistant.scheduler import Scheduler
 from assistant.state import AppState, SharedState
 from assistant.store import Event, Store
 from assistant.ui import run_ui
-from assistant import tts
+from assistant import audio_io, tts
 
 try:
     import tomllib  # py3.11+
@@ -41,11 +41,26 @@ def main() -> None:
         stt_model=cfg["stt"]["model"],
     )
 
+    output_device = cfg["audio"]["output_device"] or None
+
     def on_fire(ev: Event) -> None:
         shared.set(AppState.SPEAKING)
-        label = "Alarm" if ev.kind == "alarm" else ev.label
+        # Per-kind announcement. A timer's stored label is the stripped command
+        # text ("set a  for one minute") — never speak that; timers are anonymous.
+        if ev.kind == "reminder":
+            phrase = f"Reminder: {ev.label}."
+        elif ev.kind == "timer":
+            phrase = "Timer's up."
+        else:  # alarm
+            phrase = "Alarm."
         try:
-            tts.speak(f"{label}." if ev.kind != "reminder" else f"Reminder: {ev.label}.")
+            audio_io.beep(device=output_device)   # audible chime before the announcement
+            tts.speak(phrase)
+        except Exception as exc:
+            # A fire-time audio failure must NOT propagate: the scheduler loop has
+            # no except around on_fire, so an exception here would kill the thread
+            # and silently stop every future alarm.
+            print(f"[fire] audio failed for {ev.kind} #{ev.id}: {exc!r}")
         finally:
             shared.set(AppState.IDLE)
 

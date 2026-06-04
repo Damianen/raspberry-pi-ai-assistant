@@ -44,17 +44,15 @@ class Pipeline:
 
                 self.shared.set(AppState.THINKING)
                 text = stt.transcribe(audio, model=self.stt_model).strip()
-
-                # --- SLICE 2 ONLY: prove capture + STT. parse() is side-effect-
-                # free, so printing the intent type is safe. Do NOT call the
-                # action handler, store, tts, or brain yet (that's slice 3+).
                 intent = parse(text, datetime.now())
-                print(f"[slice2] transcript: {text!r}")
-                print(f"[slice2] intent:     {intent.type.name}")
+                print(f"[pipeline] transcript: {text!r}")
+                print(f"[pipeline] intent:     {intent.type.name}")
+
+                # Slice 3: act on it — store the event / answer / read the clock.
+                self._handle(intent)
             except Exception as exc:
-                # No tts in this slice — surface failures on the console + ERROR eyes.
-                self.shared.set(AppState.ERROR)
-                print(f"[slice2] pipeline error: {exc!r}")
+                print(f"[pipeline] error: {exc!r}")
+                self._error("Sorry, something went wrong.")
             finally:
                 self.shared.set(AppState.IDLE)
 

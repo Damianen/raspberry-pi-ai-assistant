@@ -14,6 +14,19 @@ def test_alarm_with_ampm():
     assert i.fire_at.day == 4
 
 
+def test_alarm_pm_with_dots():
+    # whisper writes "p.m." with dots; without normalization this parsed as 8 AM.
+    i = parse("set an alarm for 8 p.m.", NOW)
+    assert i.type is IntentType.SET_ALARM
+    assert (i.fire_at.hour, i.fire_at.minute) == (20, 0)
+
+
+def test_alarm_pm_with_dots_uppercase():
+    i = parse("set an alarm for 8 P.M.", NOW)
+    assert i.type is IntentType.SET_ALARM
+    assert (i.fire_at.hour, i.fire_at.minute) == (20, 0)
+
+
 def test_alarm_hhmm():
     i = parse("wake me at 6:30 am", NOW)
     assert i.type is IntentType.SET_ALARM

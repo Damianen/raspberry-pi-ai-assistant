@@ -62,6 +62,13 @@ def _design_lowpass(num_taps: int, cutoff_hz: float, fs: float) -> np.ndarray:
 
 _DECIM_FIR = _design_lowpass(_DECIM_TAPS, _DECIM_CUTOFF_HZ, CAPTURE_RATE)
 
+# --- Beep (slice 3): a short sine chime so a firing alarm is audible before the
+# spoken announcement exists. Also the first thing to actually exercise the
+# OUTPUT path in code. 44.1 kHz is universally supported by output devices. ---
+BEEP_RATE = 44_100
+BEEP_FREQ = 880.0      # A5 — clearly audible, not piercing
+BEEP_AMPLITUDE = 0.3   # well below clipping; speakers in a quiet room
+
 
 def record_until_silence(
     max_seconds: float = 8.0, device: int | str | None = None
@@ -153,6 +160,32 @@ def _resolve_device(device: int | str | None) -> int | str | None:
             return None
         return int(s) if s.isdigit() else s
     return device
+
+
+def beep(duration: float = 1.5, device: int | str | None = None,
+         freq: float = BEEP_FREQ) -> None:
+    """Play a short sine chime on the output device (blocking).
+
+    `device` takes the same forms as record_until_silence (PortAudio index, name
+    substring, or ''/None for the default). Called by the scheduler's on_fire so
+    a due alarm is audible even before TTS exists. Blocking is intentional: it
+    runs on the scheduler thread, which has nothing else to do meanwhile.
+    """
+    import sounddevice as sd  # lazy: needs native PortAudio (absent on dev boxes)
+
+    device = _resolve_device(device)
+    n = max(1, int(BEEP_RATE * duration))
+    t = np.arange(n, dtype=np.float32) / BEEP_RATE
+    wave = (BEEP_AMPLITUDE * np.sin(2.0 * np.pi * freq * t)).astype(np.float32)
+
+    # 10 ms raised-cosine fade in/out so the tone doesn't click on start/stop.
+    fade = min(n // 2, max(1, int(BEEP_RATE * 0.01)))
+    ramp = (0.5 * (1 - np.cos(np.linspace(0.0, np.pi, fade)))).astype(np.float32)
+    wave[:fade] *= ramp
+    wave[-fade:] *= ramp[::-1]
+
+    sd.play(wave, samplerate=BEEP_RATE, device=device)
+    sd.wait()
 
 
 def play(audio: bytes) -> None:

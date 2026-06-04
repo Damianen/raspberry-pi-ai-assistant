@@ -135,10 +135,23 @@ def _parse_duration(text: str) -> timedelta | None:
     return total if found else None
 
 
+def _normalize(t: str) -> str:
+    """Tidy a lowercased transcript before rule-matching.
+
+    whisper writes "8 p.m." with dots, but the am/pm rules only match "pm" — so
+    without this, "8 p.m." fails the (am|pm) match, is read as a bare hour, and
+    becomes 8 AM. Collapse dotted/spaced "a.m."/"p.m." to "am"/"pm" and drop
+    trailing sentence punctuation. Applied to the match text only; Intent.raw
+    keeps the untouched transcript.
+    """
+    t = re.sub(r"\b([ap])\.\s*m\.?", r"\1m", t)
+    return t.rstrip(" .,!?;:")
+
+
 def parse(text: str, now: datetime | None = None) -> Intent:
     now = now or datetime.now()
     raw = text.strip()
-    t = raw.lower()
+    t = _normalize(raw.lower())
 
     if not t:
         return Intent(IntentType.QUERY, raw=raw, label=raw)
