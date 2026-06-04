@@ -52,7 +52,8 @@ def main() -> None:
     )
 
     output_device = cfg["audio"]["output_device"] or None
-    tts.configure(cfg["tts"]["voice"], output_device=output_device)
+    # shared lets tts publish the live mouth-sync level into state during playback.
+    tts.configure(cfg["tts"]["voice"], output_device=output_device, shared=shared)
 
     def on_fire(ev: Event) -> None:
         shared.set(AppState.SPEAKING)

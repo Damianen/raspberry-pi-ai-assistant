@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
+from typing import Callable
 
 import numpy as np
 
@@ -207,7 +208,8 @@ _INTERRUPT_CHUNK_MS = 100
 
 def _play_interruptible(mono: np.ndarray, rate: int, channels: int,
                         device: int | str | None,
-                        stop_event: "threading.Event") -> None:
+                        stop_event: "threading.Event",
+                        level_cb: "Callable[[np.ndarray], None] | None" = None) -> None:
     """Play a mono float32 signal in chunks, bailing the instant `stop_event` is set.
 
     Backs the interruptible SPEAKING path: a tap sets the event, and at most the
@@ -215,6 +217,13 @@ def _play_interruptible(mono: np.ndarray, rate: int, channels: int,
     has buffered, so the speaker goes silent at once instead of draining a second
     of queued story. On a normal finish we stop() (which drains the queued tail)
     before closing, so the last words aren't clipped.
+
+    `level_cb`, if given, is called with each chunk's MONO samples just before it's
+    queued — that's where TTS turns playback into the live mouth-sync level (the
+    eyes read it back via SharedState). We hand it the pre-tiled mono so the caller
+    sees the true signal, and call it before write() so the mouth opens roughly as
+    the chunk becomes audible. A callback raising would kill playback, so the chunk
+    size (_INTERRUPT_CHUNK_MS) bounds how often it runs; keep the callback cheap.
 
     Shares _PLAY_LOCK with beep()/_play_blocking, so two streams can never open the
     single output device at the same time. We drive an OutputStream directly here
@@ -234,6 +243,8 @@ def _play_interruptible(mono: np.ndarray, rate: int, channels: int,
                 if stop_event.is_set():
                     stream.abort()     # drop buffered frames -> instant silence
                     return
+                if level_cb is not None:
+                    level_cb(mono[start:start + chunk])
                 stream.write(wave[start:start + chunk])
             stream.stop()              # drain the queued tail before closing
         finally:
@@ -291,7 +302,8 @@ def beep(duration: float = 1.5, device: int | str | None = None,
 
 def play(samples: np.ndarray, src_rate: int,
          device: int | str | None = None, *,
-         stop_event: "threading.Event | None" = None) -> None:
+         stop_event: "threading.Event | None" = None,
+         level_cb: "Callable[[np.ndarray], None] | None" = None) -> None:
     """Play a mono float32 signal in [-1, 1] through the output device (blocking).
 
     Resamples from `src_rate` to the device's native rate and tiles to its channel
@@ -301,6 +313,11 @@ def play(samples: np.ndarray, src_rate: int,
     `stop_event`: when given (the SPEAKING / tap-to-interrupt path), play in chunks
     and bail the moment it's set. When None (beep, confirmations, alarm
     announcements), use the unchanged blocking path — those are not interruptible.
+
+    `level_cb`: per-chunk mouth-sync hook. Only meaningful on the interruptible
+    (chunked) path, so it's ignored when stop_event is None — the blocking path is
+    one PortAudio write with no chunk boundaries to report on. Confirmations/alarms
+    don't drive the talking mouth, so that's fine.
     """
     if samples is None or samples.size == 0:
         return
@@ -310,4 +327,4 @@ def play(samples: np.ndarray, src_rate: int,
     if stop_event is None:
         _play_blocking(mono, rate, channels, device)
     else:
-        _play_interruptible(mono, rate, channels, device, stop_event)
+        _play_interruptible(mono, rate, channels, device, stop_event, level_cb)

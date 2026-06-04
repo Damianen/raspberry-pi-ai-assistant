@@ -65,8 +65,12 @@ def run_ui(shared: SharedState, on_tap: Callable[[], None],
             if not dispatch_event(ev, on_tap, on_key):
                 running = False
 
-        eyes.set_state(shared.state)
-        eyes.update()
+        # One snapshot per frame: a consistent (state, meta) pair under a single
+        # lock acquire. The eyes READ the live audio level from meta and smooth it;
+        # they never compute it (tts writes it during playback).
+        snap = shared.snapshot()
+        eyes.set_state(snap.state)
+        eyes.update(snap.meta.get("level", 0.0))
         eyes.draw(screen)
         pygame.display.flip()
         clock.tick(fps)

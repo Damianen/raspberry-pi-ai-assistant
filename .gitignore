@@ -7,3 +7,4 @@ config.toml
 *.db
 models/
 logs/
+*:Zone.Identifier
