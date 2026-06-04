@@ -1,19 +1,36 @@
-"""Pixel-eye renderer for pygame. Ported from the approved HTML prototype (v2).
+"""Pixel-eye renderer for pygame. Ported from the approved HTML prototype (v3:
+`pixel_face_prototype_v3.html`).
 
-It READS state and draws. It contains no logic. Same parameter model as the
-prototype: per-state targets for openness / scale / glow / happy / warn, plus the
-v2 additions — pupil offset + dilation and a mouth (openness / curve / side-shift)
-— each interpolated toward its target every frame.
+It READS state and draws. It contains no logic and never mutates AppState. Same
+parameter model as the prototype: per-state targets for openness / scale / glow /
+happy, pupil offset + dilation, a mouth (openness / curve / side-shift), AND a
+per-state colour — each interpolated toward its target every frame.
 
-v2 adds one external input: the live audio level (0..1) from playback, read from
-the snapshot's meta and passed into update(). The eyes only SMOOTH and DRAW that
-number (mouth openness during SPEAKING). They never compute audio — tts produces
-the level, the eyes consume it. That one-way flow is the whole point of the slice.
+v3 adds two things, both render-side:
+  1. Per-state COLOUR. Each AppState (plus a drowsy variant) maps to an RGB in
+     PALETTE; the displayed colour crossfades toward the target at COLOR_LERP, so
+     state changes fade smoothly instead of cutting. The bloom halo (the port's
+     stand-in for the prototype's listening "aura") and the optional listening
+     aura both derive from this live colour.
+  2. An IDLE "life" pack — pupil drift, double blinks, micro-expressions, a rare
+     yawn, and a drowsy mode after a long idle. All of it is driven purely by
+     time + randomness inside the IDLE path; none of it ever touches AppState.
 
-NOTE: tune CELL, colours and proportions on the actual 800x480 DSI panel — the
-numbers below come straight from the 500x300 prototype (absolute pixel offsets are
-scaled by sx=w/500, sy=h/300 so the look is resolution-independent), but they're a
-starting point, not gospel.
+THE WAKING RULE (must be exact — see set_state): any change OUT of IDLE drops the
+idle sub-behaviour and SNAPS the dimming params (glow, openness) to the new
+state's target the same frame. Drowsiness is cosmetic; it must never be able to
+mute or soften an alarm. An announcement that fires while the face is asleep lands
+at full brightness with zero ramp. (This deliberately goes further than the
+prototype, which lets glow ramp up — on the real device a dim alarm is wrong.)
+
+The one external input is the live audio level (0..1) from playback, read from the
+snapshot's meta and passed into update(); only SPEAKING uses it (mouth openness).
+The eyes SMOOTH and DRAW that number — they never compute it.
+
+NOTE: tune CELL, PALETTE, the timing constants and proportions on the actual
+800x480 DSI panel — the geometry below comes from the 500x300 prototype (absolute
+offsets scaled by sx=w/500, sy=h/300 so the look is resolution-independent), and
+the idle timings assume the ui loop's 60 fps. They're a starting point.
 """
 from __future__ import annotations
 
@@ -24,16 +41,52 @@ import pygame
 
 from .state import AppState
 
-EYE = (95, 243, 232)
-WARN = (255, 90, 77)
+# ---- Palette (tune the hues here) ------------------------------------------
+# cyan idle / blue listening / purple thinking / gold speaking / green confirm /
+# red error — matching the prototype's legend.
+PALETTE: dict[AppState, tuple[int, int, int]] = {
+    AppState.IDLE:      (95, 243, 232),
+    AppState.LISTENING: (90, 167, 255),
+    AppState.THINKING:  (176, 123, 255),
+    AppState.SPEAKING:  (255, 201, 102),
+    AppState.CONFIRM:   (109, 255, 138),
+    AppState.ERROR:     (255, 90, 77),
+}
+DROWSY_COLOR = (53, 143, 134)   # dim teal worn only while asleep (IDLE + drowsy)
+COLOR_LERP = 0.12               # per-frame crossfade of the displayed hue
 
-# The prototype canvas the absolute pixel offsets (saccade range, thinking drift,
-# mouth shift, mouth-curve depth) were tuned on. We scale them to the real panel.
+# ---- Idle-life timing (tune here) ------------------------------------------
+# In FRAMES at the ui loop's 60 fps. The HTML prototype uses shorter demo values
+# (e.g. 25 s to drowsy) "for the demo"; these are the real-device durations the
+# slice asks for. If the panel ever runs at a different fps, rescale FPS.
+FPS = 60
+DROWSY_AFTER = 120 * FPS            # 2 min of unbroken idle -> drowsy
+YAWN_MIN, YAWN_RANGE = 180 * FPS, 180 * FPS   # next yawn 3..6 min out
+YAWN_LEN = int(2.5 * FPS)           # a yawn lasts ~2.5 s
+MICRO_MIN, MICRO_RANGE = 6 * FPS, 8 * FPS     # micro-expression every 6..14 s
+STARE_LEN = 110                     # held sideways stare (frames)
+EXPR_LEN = 70                       # brief smile / squint (frames)
+BLINK_LEN = 6                       # normal blink duration
+DROWSY_BLINK_LEN = 14               # slow heavy blink while asleep
+DOUBLE_BLINK_CHANCE = 0.18          # ~18% of blinks get a follow-up
+DOUBLE_BLINK_GAP = 16               # 2nd blink ~0.27 s after the 1st
+
+# The prototype canvas the absolute pixel offsets (saccade range, drift, thinking
+# drift, mouth shift, mouth-curve depth) were tuned on. We scale them to the panel.
 _PROTO_W, _PROTO_H = 500.0, 300.0
 
 
 def _lerp(a: float, b: float, k: float) -> float:
     return a + (b - a) * k
+
+
+def _ease(x: float) -> float:
+    """Smoothstep, clamped to [0,1] — the prototype's `ease` (yawn ramp)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    return x * x * (3 - 2 * x)
 
 
 def _shade(col: tuple[int, int, int], a: float) -> tuple[int, int, int]:
@@ -42,8 +95,9 @@ def _shade(col: tuple[int, int, int], a: float) -> tuple[int, int, int]:
     The prototype draws each cell with an rgba alpha (eye gradient ~0.82..1.0,
     pupil 0.13, mouth lip 0.85, interior 0.16). The eye layer is composited onto
     black with black colour-keyed transparent, so premultiplying == alpha-blending
-    onto black, and the dimmer cells also dim the bloom for free. The minimum alpha
-    (0.13) keeps even the pupil above (0,0,0), so it survives the colour-key."""
+    onto black, and the dimmer cells also dim the bloom for free. Every palette
+    colour has all-nonzero channels, so even the 0.13 pupil stays above (0,0,0)
+    and survives the colour-key."""
     a = 0.0 if a < 0.0 else (1.0 if a > 1.0 else a)
     return int(col[0] * a), int(col[1] * a), int(col[2] * a)
 
@@ -61,15 +115,31 @@ class Eyes:
         self.state = AppState.IDLE
         self._entered = 0
         self._level = 0.0           # latest audio level from meta (set in update)
+        # displayed colour, crossfaded toward the target each frame (floats)
+        self._col = [float(c) for c in PALETTE[AppState.IDLE]]
+        # blinks (+ the optional double-blink follow-up)
         self._blink_until = 0
         self._next_blink = 60
+        self._second_blink_at = 0
+        # saccades / pupil
         self._next_saccade = 60
-        self._sac = (0.0, 0.0)      # current idle pupil target (saccade)
+        self._sac = (0.0, 0.0)      # current idle pupil target (saccade / stare)
         self._shake = 0.0
+        # idle-life sub-state: 'normal' | 'yawning' | 'drowsy'
+        self._idle_enter = 0
+        self._idle_mode = "normal"
+        self._yawn_start = 0
+        self._next_yawn = YAWN_MIN + int(random.random() * YAWN_RANGE)
+        self._micro: str | None = None    # 'smile' | 'squint' | 'stare'
+        self._micro_until = 0
+        self._next_micro = MICRO_MIN + int(random.random() * MICRO_RANGE)
+        # slow pupil drift — random phase so two units don't drift in lockstep
+        self._drift1 = random.random() * 7.0
+        self._drift2 = random.random() * 7.0
         # current interpolated params (superset of the prototype's CUR object)
-        self.p = dict(openness=1.0, scale=1.0, glow=1.0, happy=0.0, warn=0.0,
-                      px=0.0, py=0.0, dil=1.0,             # pupil offset + dilation
-                      mopen=0.0, mcurve=0.25, mshift=0.0)  # mouth
+        self.p = dict(openness=1.0, scale=1.0, glow=1.0, happy=0.0,
+                      px=0.0, py=0.0, dil=1.0,              # pupil offset + dilation
+                      mopen=0.0, mcurve=0.25, mshift=0.0)   # mouth
         # Offscreen layer for the crisp eyes. Black is colour-keyed transparent
         # so the bloom halo behind the eyes survives the final composite.
         self._eye_layer = pygame.Surface((width, height))
@@ -77,47 +147,151 @@ class Eyes:
         # Bloom works on a downscaled copy (shrink then grow == a cheap blur).
         # Smaller divisor -> wider, softer halo. Tune on the panel.
         self._bloom_size = (max(1, width // 8), max(1, height // 8))
+        # Translucent pulsing halo for LISTENING (the prototype's "aura"). Drawn
+        # only while listening, so its per-frame cost is paid only then.
+        self._aura = pygame.Surface((width, height), pygame.SRCALPHA)
 
     def set_state(self, state: AppState) -> None:
-        if state is not self.state:
-            self.state = state
-            self._entered = self.t
+        """Called every frame by the ui loop with the live AppState; acts only on
+        a real transition. THE WAKING RULE lives here."""
+        if state is self.state:
+            return
+        leaving_idle = self.state is AppState.IDLE
+        self.state = state
+        self._entered = self.t
+        self._shake = 0.0
+        if state is AppState.IDLE:
+            self._idle_enter = self.t
+            return
+        if leaving_idle:
+            # Drop any idle sub-behaviour (drowsy / yawn / micro / mid-blink) so it
+            # can't bleed into the new state, then SNAP the dimming params to the
+            # new state's target this very frame. A sleepy or mid-blink face must
+            # never mute or soften what comes next — an alarm announcement lands at
+            # full brightness with zero ramp. Colour still crossfades (cosmetic).
+            self._idle_mode = "normal"
+            self._micro = None
+            self._blink_until = 0
+            tg = self._targets()
+            self.p["glow"] = tg["glow"]
+            self.p["openness"] = tg["openness"]
 
-    # ---- targets per state (ported 1:1 from the prototype's targets()) ----
+    # ---- idle "life": runs only while IDLE (ported from the prototype) -------
+    def _idle_tick(self) -> None:
+        t, sx, sy = self.t, self._sx, self._sy
+        rnd = random.random
+        if self._idle_mode == "normal":
+            if t - self._idle_enter > DROWSY_AFTER:
+                self._idle_mode = "drowsy"          # dim, heavy-lidded, slow blinks
+                return
+            if t > self._next_yawn:
+                self._idle_mode = "yawning"
+                self._yawn_start = t
+                self._next_yawn = t + YAWN_MIN + int(rnd() * YAWN_RANGE)
+                return
+            if t > self._next_micro and self._micro is None:
+                pick = ("smile", "squint", "stare")[int(rnd() * 3)]
+                self._micro = pick
+                self._micro_until = t + (STARE_LEN if pick == "stare" else EXPR_LEN)
+                if pick == "stare":     # hold a sideways gaze for a beat
+                    self._sac = ((-1 if rnd() < 0.5 else 1) * 34 * sx,
+                                 (rnd() * 2 - 1) * 8 * sy)
+                self._next_micro = t + MICRO_MIN + int(rnd() * MICRO_RANGE)
+            if self._micro is not None and t > self._micro_until:
+                self._micro = None
+            # saccades move the pupils; suppressed mid-stare so the gaze holds
+            if t > self._next_saccade and self._micro != "stare":
+                self._sac = ((rnd() * 2 - 1) * 24 * sx, (rnd() * 2 - 1) * 10 * sy)
+                self._next_saccade = t + 70 + int(rnd() * 120)
+            if t > self._next_blink:
+                self._blink_until = t + BLINK_LEN
+                if rnd() < DOUBLE_BLINK_CHANCE:
+                    self._second_blink_at = t + DOUBLE_BLINK_GAP
+                self._next_blink = t + 90 + int(rnd() * 150)
+        elif self._idle_mode == "drowsy":
+            if t > self._next_blink:                # slow, heavy blinks
+                self._blink_until = t + DROWSY_BLINK_LEN
+                self._next_blink = t + 220 + int(rnd() * 200)
+            if t > self._next_saccade:              # pupils settle low and barely move
+                self._sac = ((rnd() * 2 - 1) * 8 * sx, (4 + rnd() * 4) * sy)
+                self._next_saccade = t + 200 + int(rnd() * 200)
+        elif self._idle_mode == "yawning":
+            if t - self._yawn_start > YAWN_LEN:
+                self._idle_mode = "normal"
+                self._second_blink_at = t + 10      # a double blink after the yawn
+        # the double-blink follow-up (and the post-yawn blink) fires here
+        if self._second_blink_at and t > self._second_blink_at:
+            self._blink_until = t + BLINK_LEN
+            self._second_blink_at = 0
+
+    # ---- targets per state (ported 1:1 from the prototype's targets()) ------
     def _targets(self) -> dict:
         age = self.t - self._entered
         sx, sy = self._sx, self._sy
         s = self.state
         if s is AppState.IDLE:
-            return dict(openness=1.0, scale=1.0, glow=1.0, happy=0.0, warn=0.0,
-                        px=self._sac[0], py=self._sac[1], dil=1.0,
-                        mopen=0.0, mcurve=0.25, mshift=0.0)
+            # slow drift layered under the saccades for a "living" gaze
+            dx = math.sin(self.t * 0.013 + self._drift1) * 8 * sx
+            dy = math.cos(self.t * 0.011 + self._drift2) * 5 * sy
+            tg = dict(openness=1.0, scale=1.0, glow=1.0, happy=0.0,
+                      px=self._sac[0] + dx, py=self._sac[1] + dy, dil=1.0,
+                      mopen=0.0, mcurve=0.25, mshift=0.0,
+                      col=PALETTE[AppState.IDLE])
+            if self._micro == "smile":
+                tg["mcurve"] = 0.6
+            elif self._micro == "squint":
+                tg["openness"] = 0.78
+            # 'stare' is realised purely through the held _sac above.
+            if self._idle_mode == "yawning":
+                a = (self.t - self._yawn_start) / YAWN_LEN          # 0..1
+                if a < 0.35:
+                    o = _ease(a / 0.35)
+                elif a > 0.65:
+                    o = 1 - _ease((a - 0.65) / 0.35)
+                else:
+                    o = 1.0
+                tg["mopen"] = o
+                tg["mcurve"] = 0.0
+                tg["openness"] = 1 - 0.85 * o      # eyes squeeze shut as mouth opens
+                tg["py"] = 6 * sy * o
+            if self._idle_mode == "drowsy":
+                tg["openness"] = 0.55              # heavy lids (~55%)
+                tg["glow"] = 0.5                   # dim to ~50%
+                tg["py"] = 6 * sy                  # pupils settle low
+                tg["px"] = dx * 0.4
+                tg["mcurve"] = 0.1
+                tg["col"] = DROWSY_COLOR
+            return tg
         if s is AppState.LISTENING:
             return dict(openness=1.15, scale=1 + 0.04 * math.sin(self.t * 0.18),
-                        glow=1.5, happy=0.0, warn=0.0,
-                        px=0.0, py=0.0, dil=1.3,
-                        mopen=0.12, mcurve=0.1, mshift=0.0)
+                        glow=1.5, happy=0.0, px=0.0, py=0.0, dil=1.3,
+                        mopen=0.12, mcurve=0.1, mshift=0.0,
+                        col=PALETTE[AppState.LISTENING])
         if s is AppState.THINKING:
-            return dict(openness=0.8, scale=1.0, glow=0.9, happy=0.0, warn=0.0,
+            return dict(openness=0.8, scale=1.0, glow=0.9, happy=0.0,
                         px=math.cos(self.t * 0.1) * 14 * sx,
                         py=-10 * sy + math.sin(self.t * 0.1) * 4 * sy, dil=0.95,
-                        mopen=0.0, mcurve=0.0, mshift=12 * sx)
+                        mopen=0.0, mcurve=0.0, mshift=12 * sx,
+                        col=PALETTE[AppState.THINKING])
         if s is AppState.SPEAKING:
             lvl = self._level
             return dict(openness=0.95 + lvl * 0.12, scale=1.01, glow=1.35,
-                        happy=0.0, warn=0.0, px=0.0, py=0.0, dil=1.05,
-                        mopen=lvl, mcurve=0.1, mshift=0.0)
+                        happy=0.0, px=0.0, py=0.0, dil=1.05,
+                        mopen=lvl, mcurve=0.1, mshift=0.0,
+                        col=PALETTE[AppState.SPEAKING])
         if s is AppState.CONFIRM:
             return dict(openness=0.6,
                         scale=1 + (0.1 * math.sin(age * 0.5) if age < 14 else 0),
-                        glow=2.4 if age < 8 else 1.5, happy=1.0, warn=0.0,
+                        glow=2.4 if age < 8 else 1.5, happy=1.0,
                         px=0.0, py=0.0, dil=1.0,
-                        mopen=0.0, mcurve=1.0, mshift=0.0)
+                        mopen=0.0, mcurve=1.0, mshift=0.0,
+                        col=PALETTE[AppState.CONFIRM])
         # ERROR
         self._shake = math.sin(age * 0.9) * 6 * sx if age < 26 else 0.0
-        return dict(openness=0.7, scale=1.0, glow=1.4, happy=0.0, warn=1.0,
+        return dict(openness=0.7, scale=1.0, glow=1.4, happy=0.0,
                     px=0.0, py=0.0, dil=0.85,
-                    mopen=0.0, mcurve=-0.7, mshift=0.0)
+                    mopen=0.0, mcurve=-0.7, mshift=0.0,
+                    col=PALETTE[AppState.ERROR])
 
     def update(self, level: float = 0.0) -> None:
         """Advance one frame. `level` is the live playback level (0..1) the eyes
@@ -126,27 +300,19 @@ class Eyes:
         self.t += 1
         self._level = 0.0 if level < 0.0 else (1.0 if level > 1.0 else level)
         if self.state is AppState.IDLE:
-            if self.t > self._next_blink:
-                self._blink_until = self.t + 6
-                self._next_blink = self.t + 90 + int(random.random() * 150)
-            if self.t > self._next_saccade:
-                # saccades now move the PUPILS, not the whole eye (v2)
-                self._sac = ((random.random() * 2 - 1) * 24 * self._sx,
-                             (random.random() * 2 - 1) * 10 * self._sy)
-                self._next_saccade = self.t + 70 + int(random.random() * 120)
+            self._idle_tick()
         elif self.state is not AppState.ERROR:
             self._shake = 0.0
 
         tg = self._targets()
         if self.state is AppState.IDLE and self.t < self._blink_until:
-            tg["openness"] = 0.06
+            tg["openness"] = 0.06       # blink overrides whatever idle was doing
 
         k = 0.5 if self.state is AppState.SPEAKING else 0.22
         self.p["openness"] = _lerp(self.p["openness"], tg["openness"], k)
         self.p["scale"] = _lerp(self.p["scale"], tg["scale"], 0.22)
         self.p["glow"] = _lerp(self.p["glow"], tg["glow"], 0.18)
         self.p["happy"] = _lerp(self.p["happy"], tg["happy"], 0.25)
-        self.p["warn"] = _lerp(self.p["warn"], tg["warn"], 0.20)
         self.p["px"] = _lerp(self.p["px"], tg["px"], 0.20)
         self.p["py"] = _lerp(self.p["py"], tg["py"], 0.20)
         self.p["dil"] = _lerp(self.p["dil"], tg["dil"], 0.15)
@@ -158,6 +324,9 @@ class Eyes:
         self.p["mopen"] = _lerp(self.p["mopen"], tg["mopen"], m_k)
         self.p["mcurve"] = _lerp(self.p["mcurve"], tg["mcurve"], 0.20)
         self.p["mshift"] = _lerp(self.p["mshift"], tg["mshift"], 0.20)
+        # colour crossfade — the one knob that makes state changes fade, not cut.
+        for i in range(3):
+            self._col[i] = _lerp(self._col[i], tg["col"][i], COLOR_LERP)
 
     # ---- shape tests (same as prototype) ----
     @staticmethod
@@ -236,7 +405,11 @@ class Eyes:
         mouth_hw = self.w * 0.115 * (1 + self.p["happy"] * 0.25)
         mouth_x = self.w * 0.5 + self.p["mshift"] + shake
 
-        col = tuple(int(_lerp(EYE[i], WARN[i], self.p["warn"])) for i in range(3))
+        r, g, b = (int(c) for c in self._col)       # live crossfaded colour
+        col = (r, g, b)
+        # glow < 1 dims the EYES too (not just the bloom): this is what makes the
+        # drowsy face actually look dim instead of merely losing its halo.
+        dim = min(1.0, self.p["glow"])
         happy = self.p["happy"] > 0.5
         pup_r = hw * 0.40 * self.p["dil"]
         px_off, py_off = self.p["px"], self.p["py"]
@@ -257,14 +430,15 @@ class Eyes:
                     if not on:
                         continue
                     # pupil: a dark block (low alpha, not skipped); hidden while the
-                    # happy crescent is up. Vertical follow is damped to 0.6.
+                    # happy crescent is up. Vertical follow is damped to 0.6. The
+                    # pupil keeps its 0.13 alpha even when dim, so it stays readable.
                     in_pupil = (not happy and
                                 math.hypot(px - (cx + px_off),
                                            py - (eye_y + py_off * 0.6)) < pup_r)
                     if in_pupil:
                         a = 0.13
                     else:
-                        a = 0.82 + 0.18 * (1 - (py - (eye_y - hh)) / (2 * hh))
+                        a = (0.82 + 0.18 * (1 - (py - (eye_y - hh)) / (2 * hh))) * dim
                     pygame.draw.rect(layer, _shade(col, a),
                                      (gx * cell, gy * cell, cell - 1, cell - 1),
                                      border_radius=2)
@@ -283,20 +457,34 @@ class Eyes:
                 nx = (px - mouth_x) / mouth_hw
                 y_c = mouth_y + m_curve * self._curve_amp * (0.5 - nx * nx)
                 interior = m_open > 0.12 and abs(py - y_c) < m_open * self.h * 0.05
-                a = 0.16 if interior else 0.85
+                a = (0.16 if interior else 0.85) * dim
                 pygame.draw.rect(layer, _shade(col, a),
                                  (gx * cell, gy * cell, cell - 1, cell - 1),
                                  border_radius=2)
+
+        # --- Listening aura (behind everything) ------------------------------
+        # The prototype's soft pulsing halo, in the live colour. Only paid for
+        # while listening; sits under the bloom + crisp eyes.
+        if self.state is AppState.LISTENING:
+            aura = 0.5 + 0.5 * math.sin(self.t * 0.18)
+            a = max(0, min(255, int(255 * (0.10 + 0.10 * aura))))
+            self._aura.fill((0, 0, 0, 0))
+            for cx in (cxl, cxr):
+                rw, rh = hw * (1.7 + 0.3 * aura), hh * (1.5 + 0.3 * aura)
+                rect = pygame.Rect(0, 0, int(rw * 2), int(rh * 2))
+                rect.center = (int(cx), int(eye_y))
+                pygame.draw.ellipse(self._aura, (r, g, b, a), rect)
+            surf.blit(self._aura, (0, 0))
 
         # Glow: shrink the eye layer then grow it back == a cheap blur (no
         # per-pixel work), scaled by the state's glow and blended additively so
         # the eyes "light up". Crisp eyes go on top (black is keyed out, so the
         # halo behind them survives).
-        g = self.p["glow"]
-        if g > 0.01:
+        g_glow = self.p["glow"]
+        if g_glow > 0.01:
             small = pygame.transform.smoothscale(layer, self._bloom_size)
             bloom = pygame.transform.smoothscale(small, (self.w, self.h))
-            m = max(0, min(255, int(80 * g)))
+            m = max(0, min(255, int(80 * g_glow)))
             bloom.fill((m, m, m), special_flags=pygame.BLEND_RGB_MULT)
             surf.blit(bloom, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
         surf.blit(layer, (0, 0))
