@@ -1,0 +1,11 @@
+# Laptop development profile (ASSISTANT_PROFILE=laptop, the default).
+display:
+  width: 800
+  height: 480
+  fullscreen: false
+camera:
+  index: 0
+# Placeholders — filled in by later slices.
+stt: {}
+tts: {}
+llm: {}

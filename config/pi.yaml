@@ -1,0 +1,12 @@
+# Raspberry Pi 5 profile (ASSISTANT_PROFILE=pi).
+# Target DSI touchscreen is 800x480 — verify the real resolution on device.
+display:
+  width: 800
+  height: 480
+  fullscreen: true
+camera:
+  index: 0
+# Placeholders — filled in by later slices.
+stt: {}
+tts: {}
+llm: {}
