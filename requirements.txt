@@ -1,9 +1,0 @@
-pygame>=2.5
-sounddevice>=0.4
-numpy>=1.26
-requests>=2.31
-python-dotenv>=1.0   # loads OPENROUTER_API_KEY from .env (gitignored)
-# Installed/built on the Pi (may need system packages / wheels):
-pywhispercpp>=1.2     # whisper.cpp bindings (STT)
-piper-tts>=1.3        # Piper (TTS); tts.py uses the 1.3+ AudioChunk API (tested on 1.4.2)
-# tomli is only needed on Python < 3.11 (stdlib tomllib otherwise)
