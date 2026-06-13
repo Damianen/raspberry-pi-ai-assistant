@@ -48,7 +48,22 @@ face:
     glance_min_s: 2.0       # random glance every glance_min..glance_max seconds
     glance_max_s: 6.0
     glance_margin: 0.15     # wander/glance targets stay this far from the edges
+stt:
+  input_device: null        # sounddevice index or name substring; null = system default
+  model: base               # faster-whisper model size (small is too slow on the Pi)
+  compute_type: int8        # quantized inference for the Pi's CPU
+  language: en
+  beam_size: 5
+  vad_threshold: 0.5        # silero speech probability above this counts as voice
+  silence_end_ms: 700       # trailing silence that closes an utterance
+  min_speech_ms: 300        # utterances with less voiced audio are discarded
+  pre_roll_ms: 200          # audio kept from just before voice onset
+  max_utterance_s: 30.0     # force-close utterances longer than this
+  no_speech_threshold: 0.6  # whisper no-speech probability above this = garbage
+  mute_tail_ms: 300         # mic stays muted this long after TTS playback ends
+tts:
+  voice: en_US-lessac-medium  # piper voice id, auto-downloaded to models/piper/
+  output_device: null         # sounddevice index or name substring; null = system default
+  length_scale: 1.0           # speech tempo; >1.0 is slower
 # Placeholders — filled in by later slices.
-stt: {}
-tts: {}
 llm: {}

@@ -13,6 +13,7 @@ from assistant.bus import EventBus
 from assistant.config import Config, load_config
 from assistant.face.module import Face
 from assistant.perception.module import Perception
+from assistant.voice.module import Voice
 
 log = logging.getLogger("assistant")
 
@@ -69,14 +70,22 @@ class AsyncRuntime:
             log.log(level, "bus: %s ts=%.3f payload=%s", event.type, event.ts, event.payload)
 
     async def _placeholder_reflexes(self) -> None:
-        """Slice-2 stand-in for the brain (slice 4): perception drives the face directly."""
-        async for event in self._bus.subscribe("person_appeared", "person_left", "gaze"):
+        """Stand-in for the brain (slice 4): perception drives the face directly,
+        and heard speech is echoed back so the voice loop is testable end to end."""
+        events = self._bus.subscribe(
+            "person_appeared", "person_left", "gaze", "speech_heard", "speaking_finished"
+        )
+        async for event in events:
             if event.type == "person_appeared":
                 self._bus.emit("face_state", {"state": "alert"})
             elif event.type == "person_left":
                 self._bus.emit("face_state", {"state": "drowsy"})
             elif event.type == "gaze":
                 self._bus.emit("face_gaze", dict(event.payload))
+            elif event.type == "speech_heard":
+                self._bus.emit("say", {"text": f"You said: {event.payload.get('text', '')}"})
+            elif event.type == "speaking_finished":
+                self._bus.emit("face_state", {"state": "neutral"})
 
 
 def _render_loop(config: Config, bus: EventBus) -> None:
@@ -123,13 +132,16 @@ def run() -> None:
     bus = EventBus()
     runtime = AsyncRuntime(bus)
     perception = Perception(config, bus, show_debug=True if args.show else None)
+    voice = Voice(config, bus)
     runtime.start()
     perception.start()
+    voice.start()
     try:
         _render_loop(config, bus)
     except KeyboardInterrupt:
         log.info("interrupted")
     finally:
+        voice.stop()
         perception.stop()
         runtime.stop()
         pygame.quit()

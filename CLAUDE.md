@@ -69,7 +69,7 @@ social — floats in [0, 1].
 - [x] 0 scaffold
 - [x] 1 face
 - [x] 2 perception
-- [ ] 3 voice
+- [x] 3 voice
 - [ ] 4 brain v1 (emotion + conversation)
 - [ ] 5 memory
 - [ ] 6 inner life (idle thoughts + sleep cycle)

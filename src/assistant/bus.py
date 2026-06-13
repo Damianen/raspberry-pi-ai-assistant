@@ -65,6 +65,13 @@ class Inbox:
             except queue.Empty:
                 return events
 
+    def get(self, timeout: float | None = None) -> Event | None:
+        """Blocking get for worker threads; None when no event arrives in time."""
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
     def close(self) -> None:
         self._bus._drop(self)
 

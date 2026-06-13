@@ -82,14 +82,37 @@ class FaceConfig:
 
 
 @dataclass(frozen=True)
+class SttConfig:
+    input_device: int | str | None  # sounddevice index or name substring; None = default
+    model: str
+    compute_type: str
+    language: str
+    beam_size: int
+    vad_threshold: float
+    silence_end_ms: float
+    min_speech_ms: float
+    pre_roll_ms: float
+    max_utterance_s: float
+    no_speech_threshold: float
+    mute_tail_ms: float
+
+
+@dataclass(frozen=True)
+class TtsConfig:
+    voice: str
+    output_device: int | str | None  # sounddevice index or name substring; None = default
+    length_scale: float
+
+
+@dataclass(frozen=True)
 class Config:
     profile: str
     display: DisplayConfig
     camera: CameraConfig
     perception: PerceptionConfig
     face: FaceConfig
-    stt: dict[str, Any]
-    tts: dict[str, Any]
+    stt: SttConfig
+    tts: TtsConfig
     llm: dict[str, Any]
 
 
@@ -153,6 +176,39 @@ def _load_perception(raw: dict[str, Any]) -> PerceptionConfig:
     )
 
 
+def _parse_device(value: Any) -> int | str | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    return str(value)
+
+
+def _load_stt(raw: dict[str, Any]) -> SttConfig:
+    return SttConfig(
+        input_device=_parse_device(raw.get("input_device")),
+        model=str(raw["model"]),
+        compute_type=str(raw["compute_type"]),
+        language=str(raw["language"]),
+        beam_size=int(raw["beam_size"]),
+        vad_threshold=float(raw["vad_threshold"]),
+        silence_end_ms=float(raw["silence_end_ms"]),
+        min_speech_ms=float(raw["min_speech_ms"]),
+        pre_roll_ms=float(raw["pre_roll_ms"]),
+        max_utterance_s=float(raw["max_utterance_s"]),
+        no_speech_threshold=float(raw["no_speech_threshold"]),
+        mute_tail_ms=float(raw["mute_tail_ms"]),
+    )
+
+
+def _load_tts(raw: dict[str, Any]) -> TtsConfig:
+    return TtsConfig(
+        voice=str(raw["voice"]),
+        output_device=_parse_device(raw.get("output_device")),
+        length_scale=float(raw["length_scale"]),
+    )
+
+
 def load_config(profile: str | None = None) -> Config:
     profile = profile or os.environ.get(PROFILE_ENV_VAR) or DEFAULT_PROFILE
     path = config_dir() / f"{profile}.yaml"
@@ -177,7 +233,7 @@ def load_config(profile: str | None = None) -> Config:
         ),
         perception=_load_perception(raw["perception"]),
         face=_load_face(raw["face"]),
-        stt=raw.get("stt") or {},
-        tts=raw.get("tts") or {},
+        stt=_load_stt(raw["stt"]),
+        tts=_load_tts(raw["tts"]),
         llm=raw.get("llm") or {},
     )

@@ -64,3 +64,26 @@ def test_inbox_filters_and_drains_for_sync_consumer() -> None:
         assert inbox.drain() == []
 
     asyncio.run(main())
+
+
+def test_inbox_blocking_get_returns_event() -> None:
+    async def main() -> None:
+        bus = EventBus()
+        bus.attach_loop(asyncio.get_running_loop())
+        inbox = bus.open_inbox("say")
+        bus.publish(Event("say", {"text": "hi"}))
+        event = inbox.get(timeout=1)
+        assert event is not None
+        assert event.type == "say"
+
+    asyncio.run(main())
+
+
+def test_inbox_blocking_get_times_out_to_none() -> None:
+    async def main() -> None:
+        bus = EventBus()
+        bus.attach_loop(asyncio.get_running_loop())
+        inbox = bus.open_inbox("say")
+        assert inbox.get(timeout=0.01) is None
+
+    asyncio.run(main())

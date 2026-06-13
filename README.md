@@ -49,6 +49,44 @@ reference only — nothing is read, merged, or copied from it.
 Manual checks for hardware/UI paths that pytest cannot cover. Record each
 slice's checks here as it lands.
 
+### Slice 3 — voice (2026-06-13)
+
+- [x] `uv run pytest` green (80 tests: +25 for sentence splitting, the
+      half-duplex gate, VAD utterance segmentation, and blocking Inbox.get).
+- [x] First run auto-downloads the piper voice `en_US-lessac-medium`
+      (63.2 MB) to `models/piper/` and faster-whisper `small` to
+      `models/whisper/`; subsequent startups load from disk and the mic is
+      live ~2 s after launch ("listening on 'default'").
+- [x] Offline pipeline check: piper synthesizes 2.9 s of speech in 0.11 s;
+      the streaming Silero VAD (v6 ONNX bundled with faster-whisper — no
+      torch) peaks at 0.994 on speech vs 0.076 on room noise; the segmenter
+      brackets the utterance (onset 88 ms into speech, covered by the
+      200 ms pre-roll); whisper transcribes it back verbatim with
+      no-speech probability 0.004.
+- [x] End-to-end loop on a zero-attenuation digital loopback (PipeWire
+      null sink as default output, its monitor as default mic — the robot's
+      own voice feeds straight back into its mic at full level):
+      `paplay` of a spoken phrase → `heard 'Testing 123. Can you hear me?'`
+      (1.2 s transcribe) → `say` echo → `speaking_started` →
+      sentence-by-sentence playback ("You said: Testing 123." then
+      "Can you hear me?") → `speaking_finished`. Repeated three times.
+- [x] No feedback loop: across all echo cycles the robot never transcribed
+      its own reply (no "You said: You said:" — zero `speech_heard` during
+      or after playback), even with its voice looped back at 0 dB.
+- [x] Half-duplex semantics: a phrase played while the robot was replying
+      was discarded entirely (no partial transcript), as designed — no
+      barge-in until a future slice.
+- [x] `face_state speaking` published when playback starts; placeholder
+      sets neutral on `speaking_finished`. Face kept animating throughout
+      (whisper transcription runs off the render thread).
+- [x] Clean SIGINT shutdown with the voice module running (both sessions
+      logged "clean shutdown"; audio devices released).
+- [ ] Real-microphone conversation at the desk: speak, hear the echo from
+      the actual speakers, confirm the mic ignores them. (The laptop's
+      default sink is a headphone DAC the Yeti mic cannot hear, so the
+      acoustic path needs speakers — verify when on the Pi or with desk
+      speakers selected.)
+
 ### Slice 2 — perception (2026-06-13)
 
 - [x] `uv run pytest` green (55 tests: +30 for cosine matching, majority
