@@ -24,6 +24,28 @@ class DisplayConfig:
 @dataclass(frozen=True)
 class CameraConfig:
     index: int
+    width: int
+    height: int
+    fps: int
+
+
+@dataclass(frozen=True)
+class PerceptionConfig:
+    detect_every_n_frames: int
+    detector_score_threshold: float
+    detector_nms_threshold: float
+    detector_top_k: int
+    presence_frames: int
+    absence_timeout_s: float
+    gaze_throttle_ms: float
+    gaze_mirror: bool
+    match_threshold: float
+    vote_samples: int
+    reverify_interval_s: float
+    show_debug: bool
+    enroll_samples: int
+    enroll_timeout_s: float
+    enroll_min_gap_ms: float
 
 
 @dataclass(frozen=True)
@@ -63,6 +85,7 @@ class Config:
     profile: str
     display: DisplayConfig
     camera: CameraConfig
+    perception: PerceptionConfig
     face: FaceConfig
     stt: dict[str, Any]
     tts: dict[str, Any]
@@ -109,6 +132,26 @@ def _load_face(raw: dict[str, Any]) -> FaceConfig:
     )
 
 
+def _load_perception(raw: dict[str, Any]) -> PerceptionConfig:
+    return PerceptionConfig(
+        detect_every_n_frames=int(raw["detect_every_n_frames"]),
+        detector_score_threshold=float(raw["detector_score_threshold"]),
+        detector_nms_threshold=float(raw["detector_nms_threshold"]),
+        detector_top_k=int(raw["detector_top_k"]),
+        presence_frames=int(raw["presence_frames"]),
+        absence_timeout_s=float(raw["absence_timeout_s"]),
+        gaze_throttle_ms=float(raw["gaze_throttle_ms"]),
+        gaze_mirror=bool(raw["gaze_mirror"]),
+        match_threshold=float(raw["match_threshold"]),
+        vote_samples=int(raw["vote_samples"]),
+        reverify_interval_s=float(raw["reverify_interval_s"]),
+        show_debug=bool(raw["show_debug"]),
+        enroll_samples=int(raw["enroll_samples"]),
+        enroll_timeout_s=float(raw["enroll_timeout_s"]),
+        enroll_min_gap_ms=float(raw["enroll_min_gap_ms"]),
+    )
+
+
 def load_config(profile: str | None = None) -> Config:
     profile = profile or os.environ.get(PROFILE_ENV_VAR) or DEFAULT_PROFILE
     path = config_dir() / f"{profile}.yaml"
@@ -124,7 +167,13 @@ def load_config(profile: str | None = None) -> Config:
             height=int(display["height"]),
             fullscreen=bool(display["fullscreen"]),
         ),
-        camera=CameraConfig(index=int(camera["index"])),
+        camera=CameraConfig(
+            index=int(camera["index"]),
+            width=int(camera["width"]),
+            height=int(camera["height"]),
+            fps=int(camera["fps"]),
+        ),
+        perception=_load_perception(raw["perception"]),
         face=_load_face(raw["face"]),
         stt=raw.get("stt") or {},
         tts=raw.get("tts") or {},

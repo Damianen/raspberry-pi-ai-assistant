@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import threading
@@ -11,6 +12,7 @@ import pygame
 from assistant.bus import EventBus
 from assistant.config import Config, load_config
 from assistant.face.module import Face
+from assistant.perception.module import Perception
 
 log = logging.getLogger("assistant")
 
@@ -49,6 +51,7 @@ class AsyncRuntime:
         tasks = [
             asyncio.create_task(self._heartbeat(), name="heartbeat"),
             asyncio.create_task(self._log_events(), name="bus-logger"),
+            asyncio.create_task(self._placeholder_reflexes(), name="placeholder-reflexes"),
         ]
         await self._stop.wait()
         for task in tasks:
@@ -64,6 +67,16 @@ class AsyncRuntime:
         async for event in self._bus.subscribe():
             level = logging.DEBUG if event.type in HIGH_RATE_EVENTS else logging.INFO
             log.log(level, "bus: %s ts=%.3f payload=%s", event.type, event.ts, event.payload)
+
+    async def _placeholder_reflexes(self) -> None:
+        """Slice-2 stand-in for the brain (slice 4): perception drives the face directly."""
+        async for event in self._bus.subscribe("person_appeared", "person_left", "gaze"):
+            if event.type == "person_appeared":
+                self._bus.emit("face_state", {"state": "alert"})
+            elif event.type == "person_left":
+                self._bus.emit("face_state", {"state": "drowsy"})
+            elif event.type == "gaze":
+                self._bus.emit("face_gaze", dict(event.payload))
 
 
 def _render_loop(config: Config, bus: EventBus) -> None:
@@ -88,6 +101,12 @@ def _render_loop(config: Config, bus: EventBus) -> None:
 
 
 def run() -> None:
+    parser = argparse.ArgumentParser(prog="assistant")
+    parser.add_argument(
+        "--show", action="store_true", help="open the OpenCV perception debug window"
+    )
+    args = parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -103,12 +122,15 @@ def run() -> None:
 
     bus = EventBus()
     runtime = AsyncRuntime(bus)
+    perception = Perception(config, bus, show_debug=True if args.show else None)
     runtime.start()
+    perception.start()
     try:
         _render_loop(config, bus)
     except KeyboardInterrupt:
         log.info("interrupted")
     finally:
+        perception.stop()
         runtime.stop()
         pygame.quit()
         log.info("clean shutdown")

@@ -68,7 +68,7 @@ social — floats in [0, 1].
 ## Slice status (update as slices land)
 - [x] 0 scaffold
 - [x] 1 face
-- [ ] 2 perception
+- [x] 2 perception
 - [ ] 3 voice
 - [ ] 4 brain v1 (emotion + conversation)
 - [ ] 5 memory

@@ -5,6 +5,25 @@ display:
   fullscreen: false
 camera:
   index: 0
+  width: 640                # requested capture size (MJPG); actual is logged
+  height: 480
+  fps: 15
+perception:
+  detect_every_n_frames: 3      # run YuNet on every Nth captured frame
+  detector_score_threshold: 0.8 # YuNet face confidence
+  detector_nms_threshold: 0.3
+  detector_top_k: 5000
+  presence_frames: 3            # consecutive face-frames before person_appeared
+  absence_timeout_s: 25.0       # this long without a face -> person_left
+  gaze_throttle_ms: 150         # at most one gaze event per this interval
+  gaze_mirror: true             # flip x so the eyes track like a mirror
+  match_threshold: 0.363        # SFace cosine similarity (opencv zoo default)
+  vote_samples: 7               # identity decided by majority of this many samples
+  reverify_interval_s: 90.0     # re-run the identity vote this often while present
+  show_debug: false             # OpenCV window with detection box + decided name
+  enroll_samples: 10            # embeddings averaged by assistant-enroll
+  enroll_timeout_s: 30.0
+  enroll_min_gap_ms: 300        # spacing between enrollment samples
 face:
   transition_ms: 250        # state-to-state ease duration
   breathing_hz: 0.1         # sleeping breathing rate
