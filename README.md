@@ -81,11 +81,14 @@ slice's checks here as it lands.
       (whisper transcription runs off the render thread).
 - [x] Clean SIGINT shutdown with the voice module running (both sessions
       logged "clean shutdown"; audio devices released).
-- [ ] Real-microphone conversation at the desk: speak, hear the echo from
-      the actual speakers, confirm the mic ignores them. (The laptop's
-      default sink is a headphone DAC the Yeti mic cannot hear, so the
-      acoustic path needs speakers — verify when on the Pi or with desk
-      speakers selected.)
+- [ ] Acoustic half-duplex on the Pi (slice 7): the case speakers sit right
+      next to the USB mic, so the mic WILL hear the robot. Speak, hear the
+      echo, confirm no self-trigger across several turns. If the robot ever
+      transcribes its own voice, raise `stt.mute_tail_ms` in `config/pi.yaml`
+      (covers output-latency tail + room decay after playback drains). The
+      laptop cannot exercise this path — its default sink is a headphone DAC
+      the Yeti mic does not hear; the 0 dB digital loopback above is the
+      laptop-side equivalent.
 
 ### Slice 2 — perception (2026-06-13)
 

@@ -60,6 +60,8 @@ stt:
   pre_roll_ms: 200          # audio kept from just before voice onset
   max_utterance_s: 30.0     # force-close utterances longer than this
   no_speech_threshold: 0.6  # whisper no-speech probability above this = garbage
+  # The case speakers sit next to the USB mic, so the mic definitely hears
+  # the robot; raise this if it ever transcribes its own echo tail.
   mute_tail_ms: 300         # mic stays muted this long after TTS playback ends
 tts:
   voice: en_US-lessac-medium  # piper voice id, auto-downloaded to models/piper/
