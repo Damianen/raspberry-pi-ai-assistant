@@ -6,6 +6,27 @@ display:
   fullscreen: true
 camera:
   index: 0
+face:
+  transition_ms: 250        # state-to-state ease duration
+  breathing_hz: 0.1         # sleeping breathing rate
+  bounce_hz: 2.5            # speaking bounce rate
+  drift_hz: 0.2             # slow gaze drift rate (thinking)
+  debug_controls: false     # no keyboard/mouse debug on the device
+  debug_gaze_hz: 20
+  blink:
+    min_interval_s: 2.0
+    max_interval_s: 7.0
+    close_open_ms: 120
+    double_chance: 0.15
+    double_gap_ms: 180
+  gaze:
+    smoothing: 0.15         # pupil lerp factor per frame (60 fps)
+    idle_after_s: 5.0       # idle wander after this long without a gaze target
+    drift_amount: 0.02      # wander nudge size, normalized gaze units
+    drift_interval_s: 0.8
+    glance_min_s: 2.0       # random glance every glance_min..glance_max seconds
+    glance_max_s: 6.0
+    glance_margin: 0.15     # wander/glance targets stay this far from the edges
 # Placeholders — filled in by later slices.
 stt: {}
 tts: {}

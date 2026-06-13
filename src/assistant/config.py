@@ -27,10 +27,43 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class BlinkConfig:
+    min_interval_s: float
+    max_interval_s: float
+    close_open_ms: float
+    double_chance: float
+    double_gap_ms: float
+
+
+@dataclass(frozen=True)
+class GazeConfig:
+    smoothing: float
+    idle_after_s: float
+    drift_amount: float
+    drift_interval_s: float
+    glance_min_s: float
+    glance_max_s: float
+    glance_margin: float
+
+
+@dataclass(frozen=True)
+class FaceConfig:
+    transition_ms: float
+    breathing_hz: float
+    bounce_hz: float
+    drift_hz: float
+    debug_controls: bool
+    debug_gaze_hz: float
+    blink: BlinkConfig
+    gaze: GazeConfig
+
+
+@dataclass(frozen=True)
 class Config:
     profile: str
     display: DisplayConfig
     camera: CameraConfig
+    face: FaceConfig
     stt: dict[str, Any]
     tts: dict[str, Any]
     llm: dict[str, Any]
@@ -45,6 +78,35 @@ def config_dir() -> Path:
     if repo_config.is_dir():
         return repo_config
     return Path.cwd() / "config"
+
+
+def _load_face(raw: dict[str, Any]) -> FaceConfig:
+    blink = raw["blink"]
+    gaze = raw["gaze"]
+    return FaceConfig(
+        transition_ms=float(raw["transition_ms"]),
+        breathing_hz=float(raw["breathing_hz"]),
+        bounce_hz=float(raw["bounce_hz"]),
+        drift_hz=float(raw["drift_hz"]),
+        debug_controls=bool(raw["debug_controls"]),
+        debug_gaze_hz=float(raw["debug_gaze_hz"]),
+        blink=BlinkConfig(
+            min_interval_s=float(blink["min_interval_s"]),
+            max_interval_s=float(blink["max_interval_s"]),
+            close_open_ms=float(blink["close_open_ms"]),
+            double_chance=float(blink["double_chance"]),
+            double_gap_ms=float(blink["double_gap_ms"]),
+        ),
+        gaze=GazeConfig(
+            smoothing=float(gaze["smoothing"]),
+            idle_after_s=float(gaze["idle_after_s"]),
+            drift_amount=float(gaze["drift_amount"]),
+            drift_interval_s=float(gaze["drift_interval_s"]),
+            glance_min_s=float(gaze["glance_min_s"]),
+            glance_max_s=float(gaze["glance_max_s"]),
+            glance_margin=float(gaze["glance_margin"]),
+        ),
+    )
 
 
 def load_config(profile: str | None = None) -> Config:
@@ -63,6 +125,7 @@ def load_config(profile: str | None = None) -> Config:
             fullscreen=bool(display["fullscreen"]),
         ),
         camera=CameraConfig(index=int(camera["index"])),
+        face=_load_face(raw["face"]),
         stt=raw.get("stt") or {},
         tts=raw.get("tts") or {},
         llm=raw.get("llm") or {},

@@ -10,15 +10,13 @@ import pygame
 
 from assistant.bus import EventBus
 from assistant.config import Config, load_config
+from assistant.face.module import Face
 
 log = logging.getLogger("assistant")
 
 FPS = 60
 HEARTBEAT_INTERVAL_S = 5.0
-BACKGROUND_COLOR = (12, 12, 24)
-PLACEHOLDER_COLOR = (250, 210, 100)
-
-COMMAND_EVENTS = ("face_state", "face_gaze", "say")
+HIGH_RATE_EVENTS = frozenset({"gaze", "face_gaze"})  # logged at DEBUG to avoid spam
 
 
 class AsyncRuntime:
@@ -64,7 +62,8 @@ class AsyncRuntime:
 
     async def _log_events(self) -> None:
         async for event in self._bus.subscribe():
-            log.info("bus: %s ts=%.3f payload=%s", event.type, event.ts, event.payload)
+            level = logging.DEBUG if event.type in HIGH_RATE_EVENTS else logging.INFO
+            log.log(level, "bus: %s ts=%.3f payload=%s", event.type, event.ts, event.payload)
 
 
 def _render_loop(config: Config, bus: EventBus) -> None:
@@ -73,20 +72,17 @@ def _render_loop(config: Config, bus: EventBus) -> None:
     screen = pygame.display.set_mode((config.display.width, config.display.height), flags)
     pygame.display.set_caption("assistant")
     clock = pygame.time.Clock()
-    commands = bus.open_inbox(*COMMAND_EVENTS)
-
-    center = (config.display.width // 2, config.display.height // 2)
-    radius = min(config.display.width, config.display.height) // 4
+    face = Face(config, bus)
 
     running = True
     while running:
         for pg_event in pygame.event.get():
             if pg_event.type == pygame.QUIT:
                 running = False
-        commands.drain()  # command events drive the face starting with slice 1
-
-        screen.fill(BACKGROUND_COLOR)
-        pygame.draw.circle(screen, PLACEHOLDER_COLOR, center, radius)
+            else:
+                face.handle_event(pg_event)
+        face.update()
+        face.render(screen)
         pygame.display.flip()
         clock.tick(FPS)
 
