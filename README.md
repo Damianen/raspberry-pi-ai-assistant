@@ -51,36 +51,35 @@ slice's checks here as it lands.
 
 ### Slice 2 — perception (2026-06-13)
 
-Verified without a person in frame (run at night, nobody at the desk):
-
 - [x] `uv run pytest` green (55 tests: +30 for cosine matching, majority
       vote, re-verify timing, presence debounce, gaze throttle).
 - [x] First `uv run assistant` auto-downloads both models to `models/`
       (YuNet 232 KB, SFace 38.7 MB — both pass the >100 KB LFS-pointer
       check) and creates `data/brain.db` with the `people` table.
-- [x] Camera opens via V4L2 (logged `640x480 @ 30 fps` — the cam ignores
-      the 15 fps request; properties are advisory, detection cadence is
-      per-frame so behavior is unaffected).
+- [x] Dock webcam (Logitech C920) opens via its stable /dev/v4l/by-id path
+      at `640x480 @ 15 fps` — `camera.device` beats `camera.index` because
+      V4L2 indexes shuffle between boots and the closed laptop's lid cam
+      sees nothing. (The lid cam also worked but negotiated 30 fps.)
 - [x] Vision pipeline verified offline against a sample face photo:
       YuNet detects (score 0.91), SFace yields a 128-dim float32 embedding,
       enrollment-style normalized mean round-trips through SQLite,
       self-match scores 0.99 (threshold 0.363), random noise does not match.
-- [x] `uv run assistant-enroll testperson` with nobody in frame exits 1
-      after the 30 s timeout with "no face captured" and stores nothing.
+- [x] Sitting at the desk: `person_appeared` ~1.3 s after start, face goes
+      alert (window title `assistant — alert`), then `face_unknown` exactly
+      once with nobody enrolled.
+- [x] Gaze events flow at 5/s (under the 150 ms throttle cap) with sane
+      normalized coordinates that match the seating position.
+- [x] `uv run assistant-enroll damian` printed `sample 1..10/10` in a few
+      seconds and stored one row; next run logged
+      `face_recognized {name: damian, score: 0.79}` and updated last_seen.
+- [x] `uv run assistant-enroll` with nobody in frame exits 1 after the 30 s
+      timeout with "no face captured" and stores nothing.
 - [x] `uv run assistant --show` opens the OpenCV debug window next to the
-      pygame face (Qt-over-XWayland warnings are harmless); SIGINT still
-      shuts down cleanly with no Python errors.
+      pygame face (Qt-over-XWayland warnings are harmless); screenshot shows
+      the green detection box labeled `damian`. Clean SIGINT shutdown.
 - [x] App keeps running (face animates) regardless of perception state.
-
-Still needs a human in frame (run these when at the desk):
-
-- [ ] Sitting down: `person_appeared` within ~1 s, face goes alert, pupils
-      follow you via throttled `gaze` events; `face_unknown` logged once.
-- [ ] Leaving for 25 s: `person_left`, face goes drowsy.
-- [ ] `uv run assistant-enroll <yourname>` prints `sample i/10` progress and
-      stores a row; next `uv run assistant` logs
-      `face_recognized {name, score}` once per decision (re-verify ~90 s).
-- [ ] `--show` window draws the detection box with your decided name.
+- [ ] Leaving the desk for 25 s: `person_left`, face goes drowsy. (Needs an
+      actual absence — verify on a normal break.)
 
 ### Slice 1 — procedural face (2026-06-13)
 

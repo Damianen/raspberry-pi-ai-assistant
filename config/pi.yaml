@@ -5,7 +5,9 @@ display:
   height: 480
   fullscreen: true
 camera:
-  index: 0
+  index: 0                  # the USB webcam is the Pi's only camera
+  # Slice 7: pin the USB webcam's /dev/v4l/by-id/... path here once known.
+  device: null
   width: 640                # requested capture size (MJPG); actual is logged
   height: 480
   fps: 15

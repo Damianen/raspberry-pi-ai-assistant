@@ -4,7 +4,10 @@ display:
   height: 480
   fullscreen: false
 camera:
-  index: 0
+  index: 0                  # fallback when device is unset (built-in lid cam)
+  # Dock webcam (Logitech C920) pinned by stable path — V4L2 indexes shuffle
+  # between boots. The lid cam is useless while the laptop is docked/closed.
+  device: /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_55267EDF-video-index0
   width: 640                # requested capture size (MJPG); actual is logged
   height: 480
   fps: 15

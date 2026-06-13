@@ -24,6 +24,7 @@ class DisplayConfig:
 @dataclass(frozen=True)
 class CameraConfig:
     index: int
+    device: str | None  # V4L2 device path; takes precedence over index (Linux only)
     width: int
     height: int
     fps: int
@@ -169,6 +170,7 @@ def load_config(profile: str | None = None) -> Config:
         ),
         camera=CameraConfig(
             index=int(camera["index"]),
+            device=str(camera["device"]) if camera.get("device") else None,
             width=int(camera["width"]),
             height=int(camera["height"]),
             fps=int(camera["fps"]),
